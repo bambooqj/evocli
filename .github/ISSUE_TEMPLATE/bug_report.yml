@@ -1,0 +1,78 @@
+name: Bug Report
+description: File a bug report to help us improve EvoCLI
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+        Please provide as much detail as possible to help us reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Run 'evocli ...'
+        2. Type '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened. Include any error messages.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / Platform
+      description: e.g. Windows 11, macOS 14.5, Ubuntu 22.04
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: EvoCLI Version
+      description: Run `evocli --version`
+    validations:
+      required: true
+
+  - type: input
+    id: llm
+    attributes:
+      label: LLM Provider
+      description: e.g. OpenAI (gpt-4o-mini), Anthropic (claude-3-5-haiku), Ollama
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: |
+        Press F12 in the TUI to view logs, or check `~/.evocli/logs/evocli.log`
+      render: shell

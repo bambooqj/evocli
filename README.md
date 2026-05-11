@@ -1,209 +1,192 @@
 # EvoCLI
 
-**AI 编程 Runtime — 本地优先，长期记忆，自我进化**
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-EvoCLI 是一个高性能的 AI 编程助手，采用 Rust Host + Python Soul 双引擎架构，在终端中提供全屏 TUI 界面，支持长期记忆、可执行技能（Skill）、代码智能索引，以及多 LLM 提供商。
+**AI coding runtime — local-first, long memory, self-evolving**
 
-```
-┌─ Rust Host (不可变核心) ──────────────────────────────────┐
-│  TUI · 安全检查 · IPC调度 · SQLite存储 · Git · 代码索引    │
-└──────────────────────────────────────────────────────────┘
-              ↕ JSON-RPC over stdin/stdout
-┌─ Python Soul (可进化层) ──────────────────────────────────┐
-│  LLM调用 · Agent编排 · Skill执行 · 记忆蒸馏 · 进化引擎    │
-└──────────────────────────────────────────────────────────┘
-```
+[简体中文](README.zh-CN.md)
 
 ---
 
-## 功能特性
+```text
+╭ EvoCLI  gpt-4o-mini  ⌂ ~/projects/myapp  [████░░░░░░] 15k/128k  12%
+╭ Messages ──────────────────────────────────────────────────────────────────╮
+│  ▌ You                                                                      │
+│    Fix the authentication bug in src/auth.rs                               │
+│                                                                             │
+│  ◆ gpt-4o-mini                                                              │
+│    I found the issue. The token validation skips the expiry check when     │
+│    the user role is "admin". Here is the fix:                              │
+│    ╭─ rust ──────────────────────────────────────────────────────────      │
+│  │ - if user.role == Role::Admin { return Ok(()); }                        │
+│  │ + if token.is_expired() { return Err(AuthError::TokenExpired); }       │
+│    ╰─────────────────────────────────────────────────────────────          │
+╰─────────────────────────────────────────────────────────────────────────────╯
+ ● Ready   ^C:quit  Enter:send  PgUp/Dn:scroll  /help:cmds  F12:log
+```
 
-- **全屏 TUI** — ratatui 打造的现代终端界面，流式响应，token 进度条，思考动画
-- **62 Rust 工具** — 文件系统、Git、Shell、代码智能、记忆、审批等，安全黑名单保护
-- **多 LLM 支持** — OpenAI、Anthropic、DeepSeek、Ollama，通过 LiteLLM 路由
-- **长期记忆** — LanceDB 向量记忆（中英双语 jina embeddings）+ SQLite FTS fallback
-- **Skill 系统** — TOML 定义的可执行技能，支持多步骤、LLM 分析、审批流
-- **代码智能** — tree-sitter AST + BM25 + PageRank 混合搜索
-- **MCP 集成** — 作为 MCP server/client，与其他 AI 工具互联
-- **进化引擎** — PrefixSpan 模式检测，自动归纳 Skill 草稿
-- **交互提示** — AI 可向用户展示多选项弹窗（`prompt.choice`），支持自定义输入
+## Features
 
----
+- **Full-screen TUI** — ratatui terminal UI with streaming responses, token progress bar, thinking animation
+- **62 Rust tools** — file system, git, shell, code intelligence, memory, approval, interactive choice prompts
+- **Long-term memory** — LanceDB vector memory (jina-embeddings-v2-base-zh, 768-dim bilingual) + SQLite FTS fallback
+- **Multi-provider LLM** — OpenAI, Anthropic, DeepSeek, Ollama via LiteLLM router; any OpenAI-compatible API works
+- **Executable skills** — TOML-defined multi-step workflows; AI can discover and run them automatically
+- **Code intelligence** — tree-sitter AST + BM25 full-text + PageRank hybrid search across your entire codebase
+- **MCP native** — serves and consumes Model Context Protocol; connect to external data sources and tools
+- **Security by default** — blacklist model; `config.toml` is permanently inaccessible to the AI agent
+- **Zero-setup deploy** — single ~14 MB binary; auto-installs Python deps via `uv` on first run
 
-## 快速开始
+## Architecture
 
-### 下载预编译版本
+```text
+┌─ Rust Host (immutable core) ────────────────────────────────────────────────┐
+│  TUI rendering  ·  Security sandbox  ·  IPC dispatch  ·  SQLite  ·  Git     │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               │  JSON-RPC over stdin/stdout
+┌─ Python Soul (evolvable) ────┴──────────────────────────────────────────────┐
+│  LLM calls (LiteLLM)  ·  Agent orchestration  ·  Skill execution  ·  Memory │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-前往 [Releases](https://github.com/bambooqj/evocli/releases) 下载对应平台压缩包，解压后：
+**Core constraint**: the Python Soul never touches the filesystem, shell, or database directly. Every operation goes through `bridge.call(tool, params)` to the Rust Host, which enforces the security sandbox.
+
+## Quick Start
+
+### Download pre-built binary
+
+Visit [Releases](https://github.com/bambooqj/evocli/releases) and grab the package for your platform.
 
 ```powershell
 # Windows
-.\setup.ps1          # 首次：自动安装 Python 环境（约 2-5 分钟）
-.\evocli.exe init    # 配置 LLM 提供商和 API Key
-.\evocli.exe         # 启动 TUI
+.\setup.ps1          # First run: installs Python environment (2-5 min, once only)
+.\evocli.exe init    # Configure LLM provider + API key
+.\evocli.exe         # Launch TUI
 ```
 
 ```bash
 # Linux / macOS
-bash setup.sh        # 首次：自动安装 Python 环境
-./evocli init        # 配置 LLM 提供商和 API Key
-./evocli             # 启动 TUI
+bash setup.sh
+./evocli init
+./evocli
 ```
 
-### 从源码构建
+### Build from source
 
-**依赖：** Rust 1.82+、Python 3.11+
+**Requirements**: Rust 1.82+, Python 3.11+
 
 ```bash
 git clone https://github.com/bambooqj/evocli.git
 cd evocli
 
-# 开发模式运行
+# Development mode (Windows)
 $env:EVOCLI_SOUL = "evocli-soul/evocli_soul/main.py"
 cargo run -p evocli
 
-# Release 构建
-cargo build --release -p evocli
+# Development mode (Linux/macOS)
+EVOCLI_SOUL=evocli-soul/evocli_soul/main.py cargo run -p evocli
 ```
 
----
+### Configure API key
 
-## 配置
-
-配置文件位于 `~/.evocli/config.toml`，运行 `evocli init` 交互式配置，或参考 [docs/config.toml.example](docs/config.toml.example)。
-
-**推荐配置方式：**
 ```bash
-evocli init          # 交互式向导，API Key 存入系统密钥链
-evocli doctor        # 健康检查（10 项）
-```
+evocli init   # Interactive wizard — stores key in system keyring
 
-**API Key 不要写入 config.toml**，请使用环境变量或系统密钥链：
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # Anthropic
-export OPENAI_API_KEY="sk-..."          # OpenAI
+# Or set an environment variable:
+export ANTHROPIC_API_KEY="sk-ant-..."   # Anthropic Claude
+export OPENAI_API_KEY="sk-..."          # OpenAI GPT
 export DEEPSEEK_API_KEY="..."           # DeepSeek
 ```
 
----
+See [docs/config.toml.example](docs/config.toml.example) for all configuration options.
 
-## TUI 快捷键
+## TUI Keyboard Shortcuts
 
-| 按键 | 功能 |
+| Key | Action |
 |---|---|
-| `Enter` | 发送消息 |
-| `Shift+Enter` | 插入换行（多行输入）|
-| `Tab` | `/` 命令补全 |
-| `Esc` | 中断生成 / 关闭弹窗 |
-| `PageUp/Down` | 滚动聊天历史 |
-| `Home/End` | 跳到最旧/最新消息 |
-| `F12` | 切换 Debug 日志面板 |
-| `Ctrl+C` | 退出 |
+| `Enter` | Send message |
+| `Shift+Enter` | Insert newline (multi-line input) |
+| `Tab` | Autocomplete `/` commands |
+| `Esc` | Interrupt generation / close modal |
+| `PageUp / PageDown` | Scroll chat history |
+| `Home / End` | Jump to oldest / newest message |
+| `F12` | Toggle debug log panel (Esc to close) |
+| `Ctrl+C` | Exit |
 
----
+## Slash Commands
 
-## 斜杠命令
+| Command | Description |
+|---|---|
+| `/help` | Show all available commands |
+| `/chain <symbol>` | Visualize function call chain |
+| `/skills` | List available skills |
+| `/skill <name>` | Run a skill |
+| `/cost` | Session cost and token usage |
+| `/index` | Re-index project code symbols |
+| `/memory <query>` | Search project memory |
+| `/clear` | Clear chat history |
+| `/log [N]` | Show last N log lines (default 30) |
 
+## Security Model
+
+EvoCLI uses a **blacklist** approach: the AI can execute any command except hardcoded dangerous operations (`rm -rf /`, `dd`, `mkfs`, `format c:`, and 18 more).
+
+Critically, `~/.evocli/config.toml` is **permanently off-limits** to the AI agent. This prevents the AI from modifying its own security rules or reading your API keys — even if it tries.
+
+Users control all policy via `config.toml` (humans only):
+
+```toml
+[security]
+extra_blocked_patterns = ["curl * | bash"]   # add custom dangerous patterns
+extra_denied_paths     = ["/prod"]           # restrict directory access
+allow_all_commands     = false               # switch to strict whitelist mode
 ```
-/help               显示所有命令
-/chain <symbol>     查看函数调用链
-/skills             列出可用技能
-/skill <name>       运行技能
-/cost               查看会话费用和 token 统计
-/index              重新索引项目代码
-/memory <query>     搜索项目记忆
-/clear              清空聊天历史
-/log [N]            显示最近 N 行日志（默认 30）
-```
 
----
-
-## 项目结构
+## Project Structure
 
 ```
 evocli/
 ├── crates/
-│   ├── host/            CLI 入口、TUI 启动、Config、Git、Logging
-│   ├── soul_bridge/     Rust↔Python JSON-RPC 桥
-│   ├── protocol/        ToolCall/Event 类型定义
-│   ├── tui/             ratatui 全屏 UI（App/ui/event_handler）
-│   ├── code_intel/      符号索引（tree-sitter + LSP）
-│   ├── knowledge_graph/ BM25 + 社区检测 + 爆炸半径分析
-│   ├── mem_router/      LLM 标签 → CPU 分类器（自训练）
-│   ├── contracts/       Task Contract + Checkpoint（SQLite）
-│   ├── tools/           安全命令白名单执行
+│   ├── host/            CLI entry, config, git, logging (15 Rust files)
+│   ├── soul_bridge/     Rust↔Python JSON-RPC bridge
+│   ├── tui/             Full-screen TUI (ratatui)
+│   ├── code_intel/      Symbol indexing (tree-sitter + LSP)
+│   ├── knowledge_graph/ BM25 + community detection + blast radius
+│   ├── mem_router/      Self-training memory classifier
+│   ├── tools/           Secure command execution
 │   └── mcp/             MCP server/client
 ├── evocli-soul/
-│   └── evocli_soul/     Python Soul（43 个模块）
-│       ├── agent.py         Pydantic AI Agent + LiteLLM
-│       ├── memory_client.py LanceDB + fastembed 向量记忆
-│       ├── skill_engine.py  TOML Skill 加载与执行
-│       ├── context_engine.py Token 预算与上下文组装
-│       ├── evolution/       进化引擎（7 个子模块）
-│       └── handlers/        66 个 RPC handler
-├── docs/                文档和配置示例
-├── scripts/             构建和部署脚本
-└── skills/              内置 Skill 定义
+│   └── evocli_soul/     Python Soul (43 modules)
+│       ├── agent.py           Pydantic AI Agent + LiteLLM
+│       ├── memory_client.py   LanceDB vector memory
+│       ├── skill_engine.py    TOML skill loader and executor
+│       ├── context_engine.py  Token budget + context assembly
+│       ├── evolution/         Self-evolution engine (7 submodules)
+│       └── handlers/          66 RPC handlers
+├── docs/          Documentation and config examples
+├── scripts/       Build and deployment scripts
+└── skills/        Built-in skill definitions
 ```
 
----
+## Contributing
 
-## 安全模型
+Contributions from everyone are welcome — whether that is a bug fix, new feature, documentation improvement, or a new built-in skill.
 
-EvoCLI 默认使用**黑名单模式**：AI 可执行任何命令，但以下危险操作永久禁止：
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
-```
-rm -rf /  •  dd if=  •  mkfs  •  format c:  •  :(){ :|: }  •  ...
-```
+- **Bug reports** — open an issue with the `bug` label
+- **Feature requests** — open an issue with the `enhancement` label
+- **Roadmap discussion** — see [docs/ROADMAP.md](docs/ROADMAP.md)
 
-用户可在 `~/.evocli/config.toml` 中追加自定义限制（此文件对 AI 不可见，防止自我修改安全策略）：
+## License
 
-```toml
-[security]
-extra_blocked_patterns = ["curl * | bash"]
-extra_denied_paths = ["/prod"]
-```
+Licensed under either of:
 
----
+- MIT License ([LICENSE](LICENSE))
+- Apache License, Version 2.0
 
-## 架构边界
-
-```
-Rust Host（不可变核心）    Python Soul（可进化层）
-─────────────────────────────────────────────────
-TUI 渲染                   LLM 调用（LiteLLM）
-安全检查（黑名单）           Agent 编排（Pydantic AI）
-IPC 调度                   Skill 执行
-SQLite 存储                记忆蒸馏
-Git 操作                   Context 组装
-代码索引                   进化逻辑
-```
-
-**核心约束**：Python Soul 不能直接访问文件系统、Shell、SQLite——所有操作必须通过 `bridge.call(tool, params)` 转发给 Rust Host。
-
----
-
-## 开发
-
-```bash
-# 编译检查
-cargo check                    # 全 workspace
-cargo check -p evocli-tui      # 单 crate
-
-# 测试
-cargo test -p contracts
-cargo test -p code_intel
-
-# Python Soul 测试
-echo '{"id":"1","method":"tracer.ping","params":{}}' | \
-  python evocli-soul/evocli_soul/main.py
-
-# 构建发行版
-.\scripts\build_dist.ps1 -Clean   # Windows
-```
-
----
-
-## 许可证
-
-MIT OR Apache-2.0
+at your option.
