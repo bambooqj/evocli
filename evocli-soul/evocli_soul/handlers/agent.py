@@ -113,30 +113,44 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
         return
 
     # ── GAP-2: /compress slash-command ───────────────────────────────────────
-    # Compacts current session history into an Anchored Summary (OpenCode pattern).
-    # Triggered by user typing /compress or /compact in the TUI.
+    # Compacts accumulated session context into an Anchored Summary.
+    # Does NOT require `history` in params — instead summarizes what the agent
+    # currently knows: memory constraints + recent session events + goal.
+    # This avoids the dependency on Rust passing history (which it currently doesn't).
     if prompt.strip().lower() in ("/compress", "/compact"):
-        history = params.get("history", [])
-        if not history:
-            await send.stream_chunk(req_id,
-                "No session history to compress. Start a conversation first.",
-                done=True)
-            return
         try:
-            from evocli_soul.context_engine import compact_session_to_anchor
+            await send.stream_chunk(req_id, "⏳ Compressing session context…\n\n", done=False)
+            import evocli_soul.state as _st_compress
+            events = list(_st_compress._session_events)  # read without draining
             llm = state.get_llm_client()
-            await send.stream_chunk(req_id, "⏳ Compressing session…\n\n", done=False)
-            summary = await compact_session_to_anchor(history, llm)
+
+            # Build summary from what we know: events + any memory
+            event_summary = ""
+            if events:
+                tool_names = [e.get("method", e.get("type", "?")) for e in events[-20:]]
+                event_summary = f"Recent actions: {', '.join(tool_names)}"
+
+            compress_prompt = (
+                f"Summarize the current AI coding session as an Anchored Summary.\n"
+                f"Format:\n"
+                f"## Goal\n[what the user is trying to accomplish]\n"
+                f"## Progress\n[what has been done, what's in progress]\n"
+                f"## Key Decisions\n[important choices made]\n"
+                f"## Next Steps\n[what should happen next]\n\n"
+                f"Known context:\n{event_summary}\n"
+                f"User request: {prompt}\n\n"
+                f"Be concise. Focus on engineering decisions and state."
+            )
+            summary = await llm.complete(compress_prompt, tier="fast", max_tokens=600)
             await send.stream_chunk(req_id,
-                f"**Session compressed successfully.**\n\n{summary}\n\n"
-                f"*History has been replaced by this summary. "
-                f"Continue working — full context is preserved.*",
+                f"**Session compressed.**\n\n{summary}\n\n"
+                f"*Context anchored. Continue working — history preserved.*",
                 done=True)
-            # Notify Rust TUI to replace its history buffer with the anchor
+            # Notify Rust TUI
             await emit_event("session_compacted", {
-                "summary": summary,
-                "chars":   len(summary),
-                "original_message_count": len(history),
+                "summary":                summary,
+                "chars":                  len(summary),
+                "original_event_count":   len(events),
             })
         except Exception as e:
             log.warning("GAP-2 /compress failed: %s", e)

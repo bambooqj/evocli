@@ -407,7 +407,7 @@ class EvoCLIAgent:
             lang_cmds = {".py": f"python -m py_compile {path}", ".rs": "cargo check --message-format short 2>&1"}
             cmd = lang_cmds.get(ext)
             if not cmd:
-                return _json.dumps({"ok": True, "output": f"No built-in linter for {ext}", "errors": []}, ensure_ascii=False)
+                return f"✓ No built-in linter for {ext} — skipped."
             try:
                 result = await bridge.call("shell.run", {"cmd": cmd, "cwd": ".", "timeout_s": 30, "dry_run": False})
                 stdout    = result.get("stdout", "") if isinstance(result, dict) else str(result)
@@ -415,12 +415,18 @@ class EvoCLIAgent:
                 exit_code = result.get("exit_code", 0) if isinstance(result, dict) else 0
                 output    = (stdout + "\n" + stderr).strip()
                 passed    = (exit_code == 0)
-                return _json.dumps({
-                    "ok": passed, "output": output[:1000], "exit_code": exit_code,
-                    "reflection_prompt": f"Lint failed:\n```\n{output[:500]}\n```\nFix these errors." if not passed else "",
-                }, ensure_ascii=False)
+                if passed:
+                    return f"✓ Lint passed for {path}."
+                # GAP-1 (pydantic-ai path): Return plain-text error so LLM clearly sees
+                # the failure and MUST respond with a fix. JSON with 'reflection_prompt'
+                # is ambiguous to LLM — plain text is unambiguous.
+                return (
+                    f"✗ Lint FAILED for {path}:\n"
+                    f"```\n{output[:800]}\n```\n"
+                    f"You MUST fix these errors before declaring the task done."
+                )
             except Exception as e:
-                return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+                return f"✗ Lint error for {path}: {e}"
 
         @agent.tool_plain
         async def run_and_capture(cmd: str, cwd: str = ".") -> str:
@@ -449,12 +455,14 @@ class EvoCLIAgent:
             exit_code = result.get("exit_code", 0) if isinstance(result, dict) else 0
             passed    = (exit_code == 0)
             output    = (stdout + "\n" + stderr).strip()
-            return _json.dumps({
-                "ok": passed, "passed": passed,
-                "output": "✓ All tests passed." if passed else output[:1000],
-                "exit_code": exit_code,
-                "reflection_prompt": f"Tests failed:\n```\n{output[:500]}\n```\nFix the failures." if not passed else "",
-            }, ensure_ascii=False)
+            if passed:
+                return "✓ All tests passed."
+            # GAP-1 (pydantic-ai path): Plain-text failure forces LLM to fix before declaring done
+            return (
+                f"✗ Tests FAILED (exit code {exit_code}):\n"
+                f"```\n{output[:800]}\n```\n"
+                f"You MUST fix these test failures before declaring the task done."
+            )
 
         @agent.tool_plain
         async def fetch_url(url: str, max_chars: int = 8000) -> str:
@@ -712,11 +720,23 @@ class EvoCLIAgent:
         import json as _json
 
         # GAP-3: Record tool call to session event buffer for memory distillation.
-        # Appended before execution so failure events are also captured.
+        # Map tool names to event types that MemoryDistiller._extract_*_chains() recognizes:
+        #   success anchors: git_commit, test_passed, skill_success
+        #   failure anchors: test_failed, error, skill_failed
+        # We record BEFORE execution so failures are captured even if the tool raises.
+        _DISTILL_EVENT_MAP: dict[str, str] = {
+            "git_commit":             "git_commit",   # success anchor
+            "test_and_capture":       "test_call",    # outcome resolved after result
+            "fs_apply_search_replace":"code_edit",
+            "fs_apply_batch":         "code_edit",
+            "fs_lint_file":           "lint_call",
+            "run_and_capture":        "shell_run",
+        }
+        _ev_type = _DISTILL_EVENT_MAP.get(name, "tool_called")
         try:
             import evocli_soul.state as _st
             _st.append_session_event({
-                "type":   "tool_called",
+                "type":   _ev_type,
                 "method": name,
                 "data":   {"tool": name},
             })
@@ -784,6 +804,16 @@ class EvoCLIAgent:
             except Exception as e:
                 result = {"ok": False, "error": str(e)}
             await emit_event("tool_call_done", {"tool": "fs.lint_file", "ok": result.get("ok", False)})
+            # GAP-3: Lint failure = error anchor for distillation
+            if not result.get("ok", True):
+                try:
+                    import evocli_soul.state as _st_lint
+                    _st_lint.append_session_event({
+                        "type": "error", "method": "fs_lint_file",
+                        "error": result.get("output", "")[:200],
+                    })
+                except Exception:
+                    pass
             return _json.dumps(result, ensure_ascii=False)
 
         # ── GAP-6: Atomic multi-file batch edit (Option C: in-memory rollback) ─
@@ -869,24 +899,34 @@ class EvoCLIAgent:
                     "results": clean_results,
                 }, ensure_ascii=False)
 
-            # Phase 3b: Commit all writes
+            # Phase 3b: Commit all writes — if ANY write fails, restore ALL from originals
             write_errors = []
+            committed_paths: list[str] = []
             for r in results:
                 if r.get("ok"):
                     try:
                         await self.bridge.call("fs.write", {"path": r["path"], "content": r["_new_content"]})
+                        committed_paths.append(r["path"])
                     except Exception as e:
                         write_errors.append(f"{r['path']}: {e}")
-            clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
-            overall_ok = not write_errors
-            await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": overall_ok})
             if write_errors:
+                # Write-phase failure: restore ALL already-committed files from originals
+                for path in committed_paths:
+                    if path in originals:
+                        try:
+                            await self.bridge.call("fs.write", {"path": path, "content": originals[path]})
+                        except Exception as re:
+                            log.warning("fs_apply_batch commit-rollback failed for %s: %s", path, re)
+                clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
+                await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
                 return _json.dumps({
-                    "ok": False, "rolled_back": False,
-                    "error": f"Write errors: {write_errors}",
+                    "ok": False, "rolled_back": True,
+                    "error": f"Write errors during commit — all files restored: {write_errors}",
                     "results": clean_results,
                 }, ensure_ascii=False)
             applied = sum(1 for r in results if r.get("ok"))
+            clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
+            await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": True})
             return _json.dumps({
                 "ok": True, "rolled_back": False,
                 "applied": applied, "total": len(edits),
@@ -999,12 +1039,36 @@ class EvoCLIAgent:
             # FIX-B: 工具执行完成 → TUI 更新状态
             await emit_event("tool_call_done", {"tool": rpc_method, "ok": True})
 
+            # GAP-3: Record semantic outcome events for MemoryDistiller
+            # These map to the anchor types distiller recognizes: git_commit, test_passed/failed
+            try:
+                import evocli_soul.state as _st3
+                if rpc_method == "git.commit":
+                    # Successful git commit = success chain anchor
+                    _st3.append_session_event({"type": "git_commit", "method": name})
+                elif name == "test_and_capture":
+                    # shell.run used for test — check exit code in result
+                    exit_code = result.get("exit_code", 0) if isinstance(result, dict) else 0
+                    ev_type = "test_passed" if exit_code == 0 else "test_failed"
+                    _st3.append_session_event({
+                        "type": ev_type, "method": name,
+                        "error": result.get("stderr", "")[:200] if isinstance(result, dict) and exit_code != 0 else "",
+                    })
+            except Exception:
+                pass
+
             if isinstance(result, str):
                 return result
             import json
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
             await emit_event("tool_call_done", {"tool": rpc_method, "ok": False, "error": str(e)})
+            # GAP-3: Record error event as failure chain anchor
+            try:
+                import evocli_soul.state as _st3e
+                _st3e.append_session_event({"type": "error", "method": name, "error": str(e)})
+            except Exception:
+                pass
             log.exception("Tool %s failed", name)
             return f"Error: {e}"
 

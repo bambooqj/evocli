@@ -204,26 +204,23 @@ class EvolutionEngine:
             log.debug("skill_drafts.jsonl write failed (non-fatal): %s", e)
 
         # 2. 通过 RPC emit_event 通知 TUI 显示提示
+        # Rust TUI handles "soul_status" with status="ready" → pushes a System chat message.
+        # "skill_draft_ready" is unknown to Rust and silently dropped, so we use
+        # soul_status as the delivery vehicle for user-visible notification.
         try:
             from evocli_soul.rpc import emit_event
-            await emit_event("skill_draft_ready", {
-                "count":  len(drafts),
-                "drafts": [
-                    {
-                        "id":               d.id,
-                        "name":             d.name,
-                        "trigger_keywords": d.trigger_keywords,
-                        "step_count":       len(d.steps),
-                    }
-                    for d in drafts
-                ],
+            names = ", ".join(d.name for d in drafts[:2])
+            if len(drafts) > 2:
+                names += f" (+{len(drafts)-2} more)"
+            await emit_event("soul_status", {
+                "status":  "ready",
                 "message": (
-                    f"Evolution 检测到 {len(drafts)} 个新 Skill 模式。"
-                    f"运行 `evocli skill promote {drafts[0].id}` 查看详情。"
+                    f"🔁 Evolution: {len(drafts)} new Skill pattern(s) detected — {names}. "
+                    f"Run `/skills` to view drafts, or `evocli skill promote <id>` to activate."
                 ),
             })
         except Exception as e:
-            log.debug("skill_draft_ready emit failed (non-fatal): %s", e)
+            log.debug("evolution TUI notify failed (non-fatal): %s", e)
 
     # ── Skill 腐化检测 ───────────────────────────────────────────
 
