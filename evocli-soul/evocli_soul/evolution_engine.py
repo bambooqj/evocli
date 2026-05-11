@@ -71,6 +71,11 @@ class EvolutionEngine:
                 drafts.append(d)
 
         log.info("Evolution scan: %d patterns, %d drafts", len(significant), len(drafts))
+
+        # GAP-5: Notify TUI + persist drafts so evolution flywheel closes
+        if drafts:
+            await self._notify_and_persist_drafts(drafts)
+
         return {
             "patterns": [{"sequence": p.sequence, "frequency": p.frequency}
                          for p in significant],
@@ -170,6 +175,55 @@ class EvolutionEngine:
             trigger_keywords=pattern.sequence[:2],
             steps=steps,
         )
+
+    # ── Draft 通知 + 持久化 ──────────────────────────────────────
+
+    async def _notify_and_persist_drafts(self, drafts: list[SkillDraft]) -> None:
+        """
+        GAP-5: 通知 TUI + 持久化 Skill 草案到 JSONL，关闭 Evolution 飞轮。
+        两步操作均非阻塞失败 — Evolution 主流程不受影响。
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        # 1. 持久化到 ~/.evocli/skill_drafts.jsonl（进程重启后仍可查看）
+        try:
+            drafts_file = _Path.home() / ".evocli" / "skill_drafts.jsonl"
+            drafts_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(drafts_file, "a", encoding="utf-8") as f:
+                for d in drafts:
+                    f.write(_json.dumps({
+                        "id":               d.id,
+                        "name":             d.name,
+                        "trigger_keywords": d.trigger_keywords,
+                        "steps":            d.steps,
+                        "created_at":       datetime.now().isoformat(),
+                        "status":           "draft",
+                    }, ensure_ascii=False) + "\n")
+        except Exception as e:
+            log.debug("skill_drafts.jsonl write failed (non-fatal): %s", e)
+
+        # 2. 通过 RPC emit_event 通知 TUI 显示提示
+        try:
+            from evocli_soul.rpc import emit_event
+            await emit_event("skill_draft_ready", {
+                "count":  len(drafts),
+                "drafts": [
+                    {
+                        "id":               d.id,
+                        "name":             d.name,
+                        "trigger_keywords": d.trigger_keywords,
+                        "step_count":       len(d.steps),
+                    }
+                    for d in drafts
+                ],
+                "message": (
+                    f"Evolution 检测到 {len(drafts)} 个新 Skill 模式。"
+                    f"运行 `evocli skill promote {drafts[0].id}` 查看详情。"
+                ),
+            })
+        except Exception as e:
+            log.debug("skill_draft_ready emit failed (non-fatal): %s", e)
 
     # ── Skill 腐化检测 ───────────────────────────────────────────
 

@@ -594,7 +594,26 @@ class EvoCLIAgent:
             ]
             return _json.dumps({"total": len(tools), "tools": tools}, ensure_ascii=False, indent=2)
 
-        log.debug("Registered 24 core tools on pydantic_ai agent via tool_plain (incl. mcp_call + mcp_list_tools)")
+        @agent.tool_plain
+        async def fs_apply_batch(edits_json: str) -> str:
+            """
+            Apply SEARCH/REPLACE edits to multiple files atomically with in-memory rollback.
+            If ANY edit fails, ALL files are instantly restored to their original content.
+
+            PREFER over multiple fs_apply_search_replace calls when making related changes
+            across 2+ files — gives you transactional safety without git dependency.
+
+            edits_json: JSON array of objects, each with:
+              - path: str (file path)
+              - search: str (exact code to find)
+              - replace: str (replacement code)
+
+            Example:
+              '[{"path":"src/lib.rs","search":"old fn","replace":"new fn"},
+                {"path":"src/main.rs","search":"old call","replace":"new call"}]'
+            """
+            # Delegate to _execute_tool which has the full implementation
+            return await self._execute_tool("fs_apply_batch", {"edits_json": edits_json})
 
     _TOOL_TO_RPC = {
         "fs_read":       ("fs.read",       lambda args: {"path": args["path"]}),
@@ -692,6 +711,18 @@ class EvoCLIAgent:
         from evocli_soul.rpc import emit_event
         import json as _json
 
+        # GAP-3: Record tool call to session event buffer for memory distillation.
+        # Appended before execution so failure events are also captured.
+        try:
+            import evocli_soul.state as _st
+            _st.append_session_event({
+                "type":   "tool_called",
+                "method": name,
+                "data":   {"tool": name},
+            })
+        except Exception:
+            pass  # Never let event recording break tool execution
+
         # ── Python-native tools (architecture fix: Oracle routing bug) ──────────
         # These tools use Python logic but call bridge for IO operations.
         # They CANNOT use bridge.call("fs.apply_search_replace") because Rust doesn't handle it.
@@ -721,6 +752,16 @@ class EvoCLIAgent:
             except Exception as e:
                 result = {"ok": False, "error": str(e)}
             await emit_event("tool_call_done", {"tool": "fs.apply_search_replace", "ok": result.get("ok", False)})
+            # GAP-3: Record outcome for distillation
+            try:
+                import evocli_soul.state as _st3
+                _st3.append_session_event({
+                    "type":   "tool_done",
+                    "method": "fs_apply_search_replace",
+                    "ok":     result.get("ok", False),
+                })
+            except Exception:
+                pass
             return _json.dumps(result, ensure_ascii=False)
 
         if name == "fs_lint_file":
@@ -744,6 +785,113 @@ class EvoCLIAgent:
                 result = {"ok": False, "error": str(e)}
             await emit_event("tool_call_done", {"tool": "fs.lint_file", "ok": result.get("ok", False)})
             return _json.dumps(result, ensure_ascii=False)
+
+        # ── GAP-6: Atomic multi-file batch edit (Option C: in-memory rollback) ─
+        # Aider pattern: save originals in memory before any writes; on any failure,
+        # restore from memory. No git dependency — always safe even with dirty workdir.
+        if name == "fs_apply_batch":
+            await emit_event("tool_call_start", {"tool": "fs.apply_batch", "display": "✏️  Batch SEARCH/REPLACE"})
+            try:
+                edits = _json.loads(args.get("edits_json", "[]"))
+            except Exception as e:
+                return _json.dumps({"ok": False, "error": f"edits_json parse error: {e}"}, ensure_ascii=False)
+            if not isinstance(edits, list) or not edits:
+                return _json.dumps({"ok": False, "error": "edits_json must be a non-empty JSON array"}, ensure_ascii=False)
+
+            from evocli_soul.edit_engine import apply_search_replace, AmbiguousSearchError
+
+            # Phase 1: Read all originals into memory (rollback checkpoint)
+            originals: dict[str, str] = {}
+            for edit in edits:
+                path = edit.get("path", "")
+                if path not in originals:
+                    try:
+                        content = await self.bridge.call("fs.read", {"path": path})
+                        if isinstance(content, str):
+                            originals[path] = content
+                    except Exception as e:
+                        await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
+                        return _json.dumps({
+                            "ok": False, "rolled_back": False,
+                            "error": f"Cannot read {path} before edit: {e}",
+                        }, ensure_ascii=False)
+
+            # Phase 2: Apply all edits
+            results: list[dict] = []
+            failed = False
+            for edit in edits:
+                path = edit.get("path", "")
+                # Use the latest content (previous edit may have modified same file)
+                current = originals.get(path, "")
+                # Reflect previous successful edits in same file
+                for prev in results:
+                    if prev.get("path") == path and prev.get("ok"):
+                        current = prev.get("_new_content", current)
+                try:
+                    new_content, strategy = apply_search_replace(
+                        current, edit.get("search", ""), edit.get("replace", "")
+                    )
+                    results.append({
+                        "path": path, "ok": True, "strategy": strategy,
+                        "_new_content": new_content,  # internal; stripped before return
+                    })
+                except AmbiguousSearchError as amb:
+                    results.append({
+                        "path": path, "ok": False, "ambiguous": True,
+                        "error": amb.to_ai_feedback(),
+                        "reflection_prompt": (
+                            f"SEARCH block is ambiguous in {path}: {amb.to_ai_feedback()}\n"
+                            f"Add more surrounding context lines to uniquely identify the target."
+                        ),
+                    })
+                    failed = True
+                except ValueError as e:
+                    results.append({"path": path, "ok": False, "strategy": "all_failed", "error": str(e),
+                                    "reflection_prompt": f"SEARCH block not found in {path}: {e}"})
+                    failed = True
+                except Exception as e:
+                    results.append({"path": path, "ok": False, "error": str(e)})
+                    failed = True
+
+            if failed:
+                # Phase 3a: Rollback — restore originals from memory (Option C)
+                for path, original_content in originals.items():
+                    try:
+                        await self.bridge.call("fs.write", {"path": path, "content": original_content})
+                    except Exception as re:
+                        log.warning("fs_apply_batch rollback failed for %s: %s", path, re)
+                # Strip internal _new_content before returning
+                clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
+                await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
+                return _json.dumps({
+                    "ok": False, "rolled_back": True,
+                    "error": "One or more edits failed — all files restored to original content.",
+                    "results": clean_results,
+                }, ensure_ascii=False)
+
+            # Phase 3b: Commit all writes
+            write_errors = []
+            for r in results:
+                if r.get("ok"):
+                    try:
+                        await self.bridge.call("fs.write", {"path": r["path"], "content": r["_new_content"]})
+                    except Exception as e:
+                        write_errors.append(f"{r['path']}: {e}")
+            clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
+            overall_ok = not write_errors
+            await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": overall_ok})
+            if write_errors:
+                return _json.dumps({
+                    "ok": False, "rolled_back": False,
+                    "error": f"Write errors: {write_errors}",
+                    "results": clean_results,
+                }, ensure_ascii=False)
+            applied = sum(1 for r in results if r.get("ok"))
+            return _json.dumps({
+                "ok": True, "rolled_back": False,
+                "applied": applied, "total": len(edits),
+                "results": clean_results,
+            }, ensure_ascii=False)
 
         # ── Fix H1: Memory tools → Python LanceDB (统一存储，不走 Rust SQLite) ────
         if name == "memory_recall":
@@ -1114,7 +1262,16 @@ class EvoCLIAgent:
         ]
         
         tools = self._build_tool_definitions()
-        
+
+        # GAP-1: Hard reflection loop constants
+        _REFLECTION_TRIGGERS = frozenset({
+            "fs_lint_file",        # lint failure → fix errors
+            "test_and_capture",    # test failure → fix code
+            "fs_apply_search_replace",  # ambiguous match → add more context
+        })
+        MAX_REFLECTIONS = 3
+        reflection_count = 0
+
         for _ in range(10):
             # Bug fix: _resolve_model() now returns Router group alias ("fast"/"smart").
             # We must resolve the alias to the real model name for litellm.acompletion().
@@ -1130,10 +1287,10 @@ class EvoCLIAgent:
             response = await llm._router.acompletion(**call_kwargs)
             msg = response.choices[0].message
             conversation.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls or None})
-            
+
             if not msg.tool_calls:
                 return msg.content or ""
-            
+
             for tc in msg.tool_calls:
                 import json as _json
                 try:
@@ -1146,6 +1303,31 @@ class EvoCLIAgent:
                     targs = {}
                 result = await self._execute_tool(tc.function.name, targs)
                 conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+                # GAP-1: Hard reflection — auto-inject error context when lint/test/edit fails.
+                # Aider pattern: failure → inject "[Auto-reflection N/MAX] <error>" as user msg
+                # so the LLM is forced to address the error before declaring done.
+                if tc.function.name in _REFLECTION_TRIGGERS and reflection_count < MAX_REFLECTIONS:
+                    try:
+                        r_data = _json.loads(result)
+                        rp = r_data.get("reflection_prompt", "")
+                        is_failed = not r_data.get("ok", True)
+                        is_ambiguous = r_data.get("ambiguous", False)
+                        if rp and (is_failed or is_ambiguous):
+                            reflection_count += 1
+                            conversation.append({
+                                "role": "user",
+                                "content": (
+                                    f"[Auto-reflection {reflection_count}/{MAX_REFLECTIONS}] "
+                                    f"{rp}"
+                                ),
+                            })
+                            log.info(
+                                "GAP-1 reflection %d/%d triggered by %s",
+                                reflection_count, MAX_REFLECTIONS, tc.function.name,
+                            )
+                    except Exception:
+                        pass  # Non-fatal: malformed result JSON, skip reflection
         
         return "Error: Max tool iterations reached"
     
@@ -1301,6 +1483,24 @@ class EvoCLIAgent:
                     "tool_name": {"type": "string", "description": "Full MCP tool key (e.g. mcp_filesystem_read_file)"},
                     "arguments_json": {"type": "string", "description": "JSON string of arguments matching the tool's input schema"},
                 }, "required": ["tool_name"]}}},
+            # ── GAP-6: Atomic multi-file batch edit with in-memory rollback ──────
+            {"type": "function", "function": {
+                "name": "fs_apply_batch",
+                "description": (
+                    "Apply SEARCH/REPLACE edits to multiple files atomically. "
+                    "If ANY edit fails, ALL files are instantly restored from in-memory originals — no data loss. "
+                    "PREFER over calling fs_apply_search_replace multiple times when changing related files together. "
+                    "Aider-style transactional safety without git dependency."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "edits_json": {
+                        "type": "string",
+                        "description": (
+                            'JSON array of edits: [{"path":"src/lib.rs","search":"old code","replace":"new code"}, ...]'
+                        ),
+                    }
+                }, "required": ["edits_json"]},
+            }},
         ]
     
     def reset(self) -> None:

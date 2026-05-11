@@ -12,7 +12,39 @@ _orchestrator: Optional[object] = None
 _config: Optional[dict]         = None  # Cached config from ~/.evocli/config.toml
 _active_subagents: dict[str, object] = {}  # session_id -> SubAgentSession
 
+# GAP-3: Per-session event accumulator for memory distillation.
+# Events are appended during tool execution and drained at session end.
+# Thread-safe: GIL protects list.append() and list.clear() in CPython.
+_session_events: list[dict] = []
+
 # threading.Lock is intentionally used (not asyncio.Lock) because:
+# 1. asyncio runs in a single thread — no true preemption between tasks.
+# 2. The double-checked locking pattern prevents redundant initialization.
+# 3. The critical section only runs pure-Python imports/construction (no awaitable I/O).
+# 4. If initialization were ever made async (e.g., await LanceDB.connect()), this MUST
+#    be changed to asyncio.Lock to avoid event-loop blocking.
+_init_lock = threading.Lock()
+
+
+def append_session_event(event: dict) -> None:
+    """Append a tool/action event to the current session's event buffer.
+    
+    Called from _execute_tool() and Python-native tool closures in agent.py.
+    The accumulated events are consumed by MemoryDistiller at session end (GAP-3).
+    """
+    _session_events.append(event)
+
+
+def drain_session_events() -> list[dict]:
+    """Return all accumulated session events and clear the buffer.
+    
+    Called once per session end by _distill_session() in handlers/agent.py.
+    Not thread-safe for concurrent drain calls, but session end is always
+    triggered from a single async handler so this is safe in practice.
+    """
+    events = list(_session_events)
+    _session_events.clear()
+    return events
 # 1. asyncio runs in a single thread — no true preemption between tasks.
 # 2. The double-checked locking pattern prevents redundant initialization.
 # 3. The critical section only runs pure-Python imports/construction (no awaitable I/O).

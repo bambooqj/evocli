@@ -80,6 +80,21 @@ async def label_with_llm(
 
         should_write = label != "no_write"
 
+        # GAP-4: Persist label to JSONL so Rust MemRouter can accumulate training data
+        # for Phase 1 activation (needs 200+ samples/class to switch from LLM slow-path
+        # to fastembed+linfa fast-path <5ms). Non-fatal — label is returned even on failure.
+        try:
+            from evocli_soul.handlers.metrics import store_label_direct
+            store_label_direct(
+                text=content,
+                label_idx=label_index_from_str(label),
+                label_name=label,
+                confidence=importance,
+                source="llm",
+            )
+        except Exception as _store_err:
+            log.debug("label storage skipped (non-fatal): %s", _store_err)
+
         log.debug("LLM labeled '%s...' → %s (importance=%.2f)", content[:40], label, importance)
         return {
             "label":        label,

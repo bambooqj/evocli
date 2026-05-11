@@ -6,6 +6,8 @@ WIRE-4: instructor 用于结构化分析输出
 from __future__ import annotations
 import importlib.util
 import logging
+import asyncio
+import time
 
 log = logging.getLogger("evocli.handlers.agent")
 
@@ -104,11 +106,41 @@ async def handle_agent_run(req_id: str, params: dict, send, state) -> None:
 
 async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
     from evocli_soul.rpc import emit_event
-    import asyncio
     import traceback as _tb
     prompt = params.get("prompt", params.get("message", params.get("input", "")))
     if not prompt:
         await send.stream_chunk(req_id, "ERROR: prompt is required", done=True)
+        return
+
+    # ── GAP-2: /compress slash-command ───────────────────────────────────────
+    # Compacts current session history into an Anchored Summary (OpenCode pattern).
+    # Triggered by user typing /compress or /compact in the TUI.
+    if prompt.strip().lower() in ("/compress", "/compact"):
+        history = params.get("history", [])
+        if not history:
+            await send.stream_chunk(req_id,
+                "No session history to compress. Start a conversation first.",
+                done=True)
+            return
+        try:
+            from evocli_soul.context_engine import compact_session_to_anchor
+            llm = state.get_llm_client()
+            await send.stream_chunk(req_id, "⏳ Compressing session…\n\n", done=False)
+            summary = await compact_session_to_anchor(history, llm)
+            await send.stream_chunk(req_id,
+                f"**Session compressed successfully.**\n\n{summary}\n\n"
+                f"*History has been replaced by this summary. "
+                f"Continue working — full context is preserved.*",
+                done=True)
+            # Notify Rust TUI to replace its history buffer with the anchor
+            await emit_event("session_compacted", {
+                "summary": summary,
+                "chars":   len(summary),
+                "original_message_count": len(history),
+            })
+        except Exception as e:
+            log.warning("GAP-2 /compress failed: %s", e)
+            await send.stream_chunk(req_id, f"Compression failed: {e}", done=True)
         return
 
     # Track whether we actually sent any content chunks so we can detect silent failures.
@@ -225,6 +257,41 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             f"Press F12 to view full logs.",
             done=True,
         )
+    finally:
+        # GAP-3: Trigger memory distillation at session end (non-blocking, best-effort).
+        # create_task() schedules distillation to run after this handler returns,
+        # so it never blocks the TUI response.
+        asyncio.create_task(_distill_session())
+
+
+async def _distill_session() -> None:
+    """Non-blocking memory distillation triggered at session end (GAP-3).
+    
+    Drains accumulated session events and passes them to MemoryDistiller,
+    which extracts success/failure chains and writes them to LanceDB memory.
+    This is the core "越用越智能" flywheel trigger.
+    """
+    try:
+        import evocli_soul.state as _st
+        events = _st.drain_session_events()
+        if len(events) < 2:
+            return  # Not enough signal to extract meaningful patterns
+
+        from evocli_soul.memory_distill import MemoryDistiller
+        bridge = _st.get_bridge()
+        distiller = MemoryDistiller(bridge)
+        result = await distiller.run({
+            "session_id":     f"sess_{int(time.time())}",
+            "events":         events,
+            "project_id":     ".",
+            "priority_scope": "project",
+        })
+        written = result.get("distilled", 0)
+        if written > 0:
+            log.info("GAP-3 distillation: %d memory items written from %d events",
+                     written, len(events))
+    except Exception as e:
+        log.debug("GAP-3 distillation failed (non-fatal): %s", e)
 
 
 
