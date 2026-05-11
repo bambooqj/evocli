@@ -107,6 +107,25 @@ class EvolutionEngine:
                 result["drafts_saved"] = saved
                 if saved:
                     log.info("Evolution: %d new skill draft(s) saved to %s", saved, PROPOSALS_DIR)
+                    # GAP-5 (active path): Notify TUI using soul_status which Rust TUI DOES handle.
+                    # This is the active evolution entry point (main.py uses evocli_soul.evolution,
+                    # not evolution_engine.py). The soul_status "ready" message is pushed as a
+                    # System chat message in the TUI.
+                    try:
+                        from evocli_soul.rpc import emit_event
+                        import asyncio as _asyncio
+                        names = ", ".join(d.get("name", "?") for d in result["drafts"][:2])
+                        if len(result["drafts"]) > 2:
+                            names += f" (+{len(result['drafts'])-2} more)"
+                        _asyncio.create_task(emit_event("soul_status", {
+                            "status":  "ready",
+                            "message": (
+                                f"🔁 Evolution: {saved} new Skill pattern(s) — {names}. "
+                                f"Run `evocli evolve drafts` to review."
+                            ),
+                        }))
+                    except Exception as _ev_err:
+                        log.debug("Evolution TUI notify failed (non-fatal): %s", _ev_err)
 
         # Section 9.6：失败知识挖掘
         if events:

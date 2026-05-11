@@ -1371,19 +1371,34 @@ class EvoCLIAgent:
                 # GAP-1: Hard reflection — auto-inject error context when lint/test/edit fails.
                 # Aider pattern: failure → inject "[Auto-reflection N/MAX] <error>" as user msg
                 # so the LLM is forced to address the error before declaring done.
+                # Detection handles BOTH response formats:
+                #   - JSON: {"ok": false, "reflection_prompt": "..."} (from _execute_tool path)
+                #   - Plain text: "✗ Tests FAILED..." or "✗ Lint FAILED..." (from pydantic-ai closures
+                #     called via _execute_tool when tools are Python-native)
                 if tc.function.name in _REFLECTION_TRIGGERS and reflection_count < MAX_REFLECTIONS:
                     try:
-                        r_data = _json.loads(result)
-                        rp = r_data.get("reflection_prompt", "")
-                        is_failed = not r_data.get("ok", True)
-                        is_ambiguous = r_data.get("ambiguous", False)
-                        if rp and (is_failed or is_ambiguous):
+                        reflection_msg = ""
+                        # Try JSON format first
+                        try:
+                            r_data = _json.loads(result)
+                            rp = r_data.get("reflection_prompt", "")
+                            is_failed = not r_data.get("ok", True)
+                            is_ambiguous = r_data.get("ambiguous", False)
+                            if rp and (is_failed or is_ambiguous):
+                                reflection_msg = rp
+                        except (_json.JSONDecodeError, TypeError, AttributeError):
+                            pass
+                        # Fallback: detect plain-text failure markers (new format from lint/test)
+                        if not reflection_msg and isinstance(result, str):
+                            if result.startswith("✗") or "FAILED" in result or "You MUST fix" in result:
+                                reflection_msg = result[:600]
+                        if reflection_msg:
                             reflection_count += 1
                             conversation.append({
                                 "role": "user",
                                 "content": (
                                     f"[Auto-reflection {reflection_count}/{MAX_REFLECTIONS}] "
-                                    f"{rp}"
+                                    f"{reflection_msg}"
                                 ),
                             })
                             log.info(
@@ -1391,7 +1406,7 @@ class EvoCLIAgent:
                                 reflection_count, MAX_REFLECTIONS, tc.function.name,
                             )
                     except Exception:
-                        pass  # Non-fatal: malformed result JSON, skip reflection
+                        pass  # Non-fatal: never break the tool loop
         
         return "Error: Max tool iterations reached"
     
