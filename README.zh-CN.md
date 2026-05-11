@@ -151,6 +151,21 @@ evocli/
 └── skills/        内置技能定义
 ```
 
+## 文档导航
+
+| 文档 | 说明 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 双引擎设计、Crate 架构、JSON-RPC 内部机制、记忆/安全/TUI 深度解析 |
+| [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) | 全部 62 个 Rust 工具 + 55 个 Python 工具，含参数和返回值 |
+| [docs/SKILLS_GUIDE.md](docs/SKILLS_GUIDE.md) | TOML 技能编写指南、所有 action 类型、变量插值、Prompt 模板 |
+| [docs/MEMORY_SYSTEM.md](docs/MEMORY_SYSTEM.md) | LanceDB + SQLite 记忆层、蒸馏机制、嵌入模型、上下文注入 |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | JSON-RPC 协议规范、消息类型、事件类型、handler 编写示例 |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | 所有配置项、类型、默认值、环境变量覆盖方式 |
+| [docs/TUI_INTERNALS.md](docs/TUI_INTERNALS.md) | App 状态机、事件循环、渲染器、虚拟滚动、添加新 Widget |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | v0.1.0 已完成 · v0.2.0 计划 · v1.0 愿景 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、构建、测试、代码风格、PR 流程 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本发布历史 |
+
 ## 参与贡献
 
 欢迎所有形式的贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 开始参与。

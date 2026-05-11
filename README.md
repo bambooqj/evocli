@@ -172,6 +172,21 @@ evocli/
 └── skills/        Built-in skill definitions
 ```
 
+## Documentation
+
+| Document | Description |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Dual-engine design, crate map, JSON-RPC internals, memory/security/TUI deep dive |
+| [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md) | All 62 Rust tools + 55 Python tools — params, return values, examples |
+| [docs/SKILLS_GUIDE.md](docs/SKILLS_GUIDE.md) | How to write TOML skills, all actions, variable interpolation, prompt templates |
+| [docs/MEMORY_SYSTEM.md](docs/MEMORY_SYSTEM.md) | LanceDB + SQLite tiers, distillation, embedding model, context injection |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | JSON-RPC protocol spec, all message types, event types, handler authoring |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every config option with types, defaults, and environment variable overrides |
+| [docs/TUI_INTERNALS.md](docs/TUI_INTERNALS.md) | App state machine, event loop, renderer, virtual scrolling, adding widgets |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | v0.1.0 shipped, v0.2.0 planned, v1.0 vision |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, build, test, code style, PR process |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+
 ## Contributing
 
 Contributions from everyone are welcome — whether that is a bug fix, new feature, documentation improvement, or a new built-in skill.
