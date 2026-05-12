@@ -65,3 +65,8 @@ regex.workspace = true
 
 # ignore: .gitignore-aware walker (used in index_cmd.rs for progress counting)
 ignore.workspace = true
+
+# Web fetch (native Rust — no Python httpx/readability-lxml needed)
+reqwest.workspace = true
+scraper.workspace = true
+htmd.workspace    = true

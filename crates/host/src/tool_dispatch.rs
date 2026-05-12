@@ -6,7 +6,7 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::path::PathBuf;
-use crate::{fs_tools, git, security::SecurityController};
+use crate::{fs_tools, git, security::SecurityController, web_tools};
 use soul_bridge::{SoulBridge, ToolCallRequest};
 use knowledge_graph::{Bm25Index, KnowledgeGraph};/// 处理 Python Soul 发来的工具调用请求，返回结果。
 /// `bridge` — Some(&SoulBridge) in TUI mode (enables approval modal), None in CLI/test.
@@ -765,6 +765,13 @@ pub async fn dispatch(req: &ToolCallRequest, bridge: Option<&SoulBridge>, cfg: &
         // ── G-09: 用户工具发现 ───────────────────────────────────────
         "tool.list_user" => {
             Ok(crate::commands::tools_cmd::list_user_tools_json())
+        }
+
+        // ── Web fetch (native Rust: reqwest + scraper + htmd) ────────────────
+        // Replaces Python web_fetcher.py — no httpx/readability-lxml/html2text needed.
+        // Parameters: url (required), max_chars (default 8000), selector (optional CSS)
+        "web.fetch" => {
+            web_tools::fetch(args).await
         }
         "tool.run_user" => {
             // 按名称执行用户注册的工具（安全：cmd 来自 ~/.evocli/user_tools.toml，非用户输入）

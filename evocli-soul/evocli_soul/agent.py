@@ -586,20 +586,19 @@ class EvoCLIAgent:
             )
 
         @agent.tool_plain
-        async def fetch_url(url: str, max_chars: int = 8000) -> str:
+        async def fetch_url(url: str, max_chars: int = 8000, selector: str = "") -> str:
             """
-            Fetch a URL and return clean Markdown content to add to context.
-            Research: Aider's /web command + Continue.dev's @url context provider.
-            Uses httpx + readability-lxml + html2text (no browser required).
-            max_chars: limit content size for context window (default 8000 chars ≈ 2k tokens).
+            Fetch a URL and return clean Markdown content.
+            Uses native Rust (reqwest + scraper + htmd) — no browser, no Python httpx needed.
+            url:       HTTP/HTTPS URL to fetch
+            max_chars: max characters to return (default 8000 ≈ 2k tokens)
+            selector:  optional CSS selector to extract specific element (e.g. 'article', 'main')
             """
-            # Call Python-native web fetcher directly (not via bridge — pure Python HTTP)
-            try:
-                from evocli_soul.web_fetcher import fetch_url as _fetch
-                result = await _fetch(url, max_chars=max_chars)
-                return _json.dumps(result, ensure_ascii=False)
-            except Exception as e:
-                return _json.dumps({"ok": False, "url": url, "error": str(e)}, ensure_ascii=False)
+            # Use native Rust web.fetch RPC — faster, no Python dependency on httpx/readability
+            params: dict = {"url": url, "max_chars": max_chars}
+            if selector:
+                params["selector"] = selector
+            return await _sc("web.fetch", params)
 
         # ── GitNexus-inspired knowledge graph tools ──────────────────────
         @agent.tool_plain

@@ -89,6 +89,14 @@ ndarray  = { version = "0.15" }
 # diffy: 纯 Rust unified diff 生成与应用（替代手写 O(n³) simple_diff）
 diffy    = { version = "0.3" }
 
+# ── Web fetching (web.fetch RPC — native Rust, no Python httpx/readability) ──
+# reqwest: async HTTP client with rustls (no OpenSSL dep, cross-platform)
+reqwest  = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "deflate"] }
+# scraper: HTML parsing with CSS selectors (built on html5ever — same as Firefox)
+scraper  = { version = "0.21", default-features = false }
+# htmd: HTML → Markdown conversion (pure Rust)
+htmd     = { version = "0.1" }
+
 # crate 间依赖
 soul_bridge     = { path = "crates/soul_bridge" }
 protocol        = { path = "crates/protocol" }

@@ -17,6 +17,7 @@ mod logging;
 mod python_manager;   // v3.x: uv 自管理 Python 运行时
 mod security;
 mod tool_dispatch;
+mod web_tools;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -353,5 +354,6 @@ pub fn find_soul_dir_relative_to_exe() -> Option<std::path::PathBuf> {
     }
     None
 }
+
 
 
