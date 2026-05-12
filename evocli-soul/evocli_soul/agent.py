@@ -746,6 +746,239 @@ class EvoCLIAgent:
                 "skip_failed": skip_failed,
             })
 
+        # ══════════════════════════════════════════════════════════════════════
+        # Shell convenience tools — pydantic-ai parity with LiteLLM path
+        # 这些工具在 _TOOL_TO_RPC 中早已有定义，但未注册到 pydantic-ai 主路径。
+        # shell_run 可以替代一切，但专用工具的结构化 schema 让 LLM 更精准。
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def shell_ls(path: str = ".", long_format: bool = False) -> str:
+            """List directory contents. path: directory to list. long_format: show size/perms."""
+            cmd = f"ls -la {path}" if long_format else f"ls {path}"
+            return await _sc("shell.run", {"cmd": cmd, "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_find(path: str = ".", pattern: str = "*", file_type: str = "") -> str:
+            """Find files by name pattern (like find -name). file_type: f=file d=dir."""
+            type_flag = f" -type {file_type}" if file_type else ""
+            cmd = f'find {path} -name "{pattern}"{type_flag}'
+            return await _sc("shell.run", {"cmd": cmd, "cwd": ".", "timeout_s": 15, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_cat(path: str) -> str:
+            """Print file contents with line numbers (prefer fs_read for code files)."""
+            return await _sc("shell.run", {"cmd": f"cat -n {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_head(path: str, lines: int = 20) -> str:
+            """Read the first N lines of a file."""
+            return await _sc("shell.run", {"cmd": f"head -n {lines} {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_tail(path: str, lines: int = 20) -> str:
+            """Read the last N lines of a file (useful for logs and recent changes)."""
+            return await _sc("shell.run", {"cmd": f"tail -n {lines} {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_wc(path: str) -> str:
+            """Count lines, words, and characters in a file."""
+            return await _sc("shell.run", {"cmd": f"wc {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_mkdir(path: str) -> str:
+            """Create a directory (and parents) recursively."""
+            return await _sc("shell.run", {"cmd": f"mkdir -p {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_mv(src: str, dst: str) -> str:
+            """Move or rename a file or directory."""
+            return await _sc("shell.run", {"cmd": f"mv {src} {dst}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_cp(src: str, dst: str) -> str:
+            """Copy a file or directory (-r applied automatically for directories)."""
+            return await _sc("shell.run", {"cmd": f"cp -r {src} {dst}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        @agent.tool_plain
+        async def shell_touch(path: str) -> str:
+            """Create an empty file or update its timestamp."""
+            return await _sc("shell.run", {"cmd": f"touch {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Symbol & code intelligence tools
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def symbol_variants(type_name: str) -> str:
+            """Find all variants or implementations of a type (e.g. enum variants, trait impls)."""
+            return await _sc("symbol.variants", {"type_name": type_name})
+
+        @agent.tool_plain
+        async def symbol_usages(symbol_id: str, limit: int = 20) -> str:
+            """Find all call sites and usages of a symbol across the codebase."""
+            return await _sc("symbol.usages", {"symbol_id": symbol_id, "limit": limit})
+
+        @agent.tool_plain
+        async def code_intel_list_symbols(path: str) -> str:
+            """List all symbols (functions, structs, classes) defined in a file."""
+            return await _sc("code_intel.list_symbols", {"file": path})
+
+        @agent.tool_plain
+        async def code_intel_incoming_calls(symbol_id: str) -> str:
+            """List functions that directly call a given symbol (direct callers)."""
+            return await _sc("code_intel.incoming_calls", {"symbol_id": symbol_id})
+
+        @agent.tool_plain
+        async def code_intel_outgoing_calls(symbol_id: str) -> str:
+            """List functions that a given symbol calls (callees)."""
+            return await _sc("code_intel.outgoing_calls", {"symbol_id": symbol_id})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Assumption verifiers — run BEFORE modifying shared/complex code
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def assume_has_tests(symbol: str) -> str:
+            """Check if a function or class has test coverage."""
+            return await _sc("assume.has_tests", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def assume_is_pure(symbol: str) -> str:
+            """Check if a function is pure (no side effects, deterministic output)."""
+            return await _sc("assume.is_pure", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def assume_caller_count(symbol: str) -> str:
+            """Count how many places call a given symbol (helps assess change risk)."""
+            return await _sc("assume.caller_count", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def assume_has_side_effects(symbol: str) -> str:
+            """Check if a function has observable side effects (I/O, mutation, etc.)."""
+            return await _sc("assume.has_side_effects", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def assume_verify(assumption: str, subject: str) -> str:
+            """Verify a natural language assumption about a code element.
+            assumption: what you believe to be true. subject: symbol or file being tested."""
+            return await _sc("assume.verify", {"assumption": assumption, "subject": subject})
+
+        @agent.tool_plain
+        async def assume_is_deprecated(symbol: str) -> str:
+            """Check if a symbol is deprecated or has a recommended replacement."""
+            return await _sc("assume.is_deprecated", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def assume_is_only_caller(symbol: str) -> str:
+            """Check if the current context is the only caller of a function."""
+            return await _sc("assume.is_only_caller", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def assume_types_match(symbol: str) -> str:
+            """Check if two type signatures are compatible for a substitution."""
+            return await _sc("assume.types_match", {"symbol": symbol})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Impact analysis — use BEFORE modifying widely-used symbols
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def impact_check(symbol: str, change_type: str = "behavior") -> str:
+            """Check the full impact radius of modifying a symbol.
+            change_type: 'behavior' | 'signature' | 'removal'"""
+            return await _sc("impact.check", {"symbol": symbol, "change_type": change_type})
+
+        @agent.tool_plain
+        async def impact_affected_tests(symbol: str) -> str:
+            """List all tests that would be affected by changing a symbol."""
+            return await _sc("impact.affected_tests", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def impact_batch_check(symbols_json: str) -> str:
+            """Batch impact check for multiple symbols at once (JSON array of symbol names)."""
+            return await _sc("impact.batch_check", {"symbols": symbols_json})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Verification tools
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def verify_task(task_id: str) -> str:
+            """Verify that a task contract has been completed as specified."""
+            return await _sc("verify.task", {"task_id": task_id})
+
+        @agent.tool_plain
+        async def verify_coverage(symbol: str) -> str:
+            """Verify that test coverage for a symbol meets the required threshold."""
+            return await _sc("verify.coverage", {"symbol": symbol})
+
+        @agent.tool_plain
+        async def verify_drift(spec: str) -> str:
+            """Check if the implementation has drifted from the original specification."""
+            return await _sc("verify.drift", {"spec": spec})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Equivalence search
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def equiv_find(intent: str, limit: int = 5) -> str:
+            """Find existing implementations that match a described intent (avoid re-inventing)."""
+            return await _sc("equiv.find", {"intent": intent, "limit": limit})
+
+        @agent.tool_plain
+        async def equiv_find_similar_code(code: str, limit: int = 5) -> str:
+            """Find code snippets semantically similar to a given code block."""
+            return await _sc("equiv.find_similar_code", {"code": code, "limit": limit})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Git safety tools
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def git_snapshot() -> str:
+            """Create a git stash snapshot for safe rollback BEFORE risky changes."""
+            return await _sc("git.snapshot", {})
+
+        @agent.tool_plain
+        async def git_restore(ref: str = "") -> str:
+            """Restore files from a git snapshot (pass stash ref or leave empty for latest)."""
+            return await _sc("git.restore", {"ref": ref} if ref else {})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # System tools
+        # ══════════════════════════════════════════════════════════════════════
+
+        @agent.tool_plain
+        async def approval_request(action: str, reason: str = "") -> str:
+            """Request user confirmation before a risky or irreversible operation.
+            action: what you are about to do. reason: why it is necessary."""
+            return await _sc("approval.request", {"action": action, "reason": reason})
+
+        @agent.tool_plain
+        async def memory_constraints() -> str:
+            """Retrieve all active constraints and rules for this project."""
+            # python-native: LanceDB
+            try:
+                import evocli_soul.state as _st_mc
+                memory = _st_mc.get_memory()
+                constraints = memory.get_constraints() if hasattr(memory, "get_constraints") else []
+                import json as _j
+                return _j.dumps({"constraints": constraints}, ensure_ascii=False)
+            except Exception as e:
+                return f"Error: {e}"
+
+        @agent.tool_plain
+        async def tool_list_user() -> str:
+            """List all user-registered custom tools available for this project."""
+            return await _sc("tool.list_user", {})
+
+        @agent.tool_plain
+        async def tool_run_user(name: str, args: str = "") -> str:
+            """Run a user-registered custom tool by name."""
+            return await _sc("tool.run_user", {"name": name, "args": args, "dry_run": False})
+
     def _select_tools_for_request(self, user_input: str) -> frozenset[str]:
         """
         为本次请求选择工具子集。更新 self._selected_tool_names。
