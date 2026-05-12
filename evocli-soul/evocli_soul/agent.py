@@ -396,6 +396,37 @@ class EvoCLIAgent:
                 return _json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
         @agent.tool_plain
+        async def fs_read_range(path: str, start_line: int = 0, end_line: int = 0) -> str:
+            """
+            Read a specific line range from a file (1-indexed, inclusive).
+
+            PREFER over fs_read for large files (>200 lines). Dramatically reduces
+            context usage: reading lines 50-120 of a 2000-line file uses 3% of the tokens.
+
+            Args:
+              path:       file path
+              start_line: first line to include (1-indexed). 0 = start of file.
+              end_line:   last line to include (1-indexed, inclusive). 0 = end of file.
+
+            Returns JSON with: content, start_line, end_line, total_lines, note.
+            The 'note' field tells you if there are more lines outside the range.
+
+            Examples:
+              Read lines 40-80:        fs_read_range("src/auth.rs", 40, 80)
+              Read first 60 lines:     fs_read_range("src/auth.rs", 0, 60)
+              Read from line 200:      fs_read_range("src/auth.rs", 200, 0)
+            """
+            params: dict = {"path": path}
+            if start_line > 0:
+                params["start_line"] = start_line
+            if end_line > 0:
+                params["end_line"] = end_line
+            result = await bridge.call("fs.read_range", params)
+            if isinstance(result, dict):
+                return _json.dumps(result, ensure_ascii=False)
+            return str(result)
+
+        @agent.tool_plain
         async def fs_lint_file(path: str) -> str:
             """
             Run a linter on a file after making edits. Returns errors with line numbers.
@@ -604,28 +635,38 @@ class EvoCLIAgent:
             return _json.dumps({"total": len(tools), "tools": tools}, ensure_ascii=False, indent=2)
 
         @agent.tool_plain
-        async def fs_apply_batch(edits_json: str) -> str:
+        async def fs_apply_batch(edits_json: str, skip_failed: bool = False) -> str:
             """
-            Apply SEARCH/REPLACE edits to multiple files atomically with in-memory rollback.
-            If ANY edit fails, ALL files are instantly restored to their original content.
+            Apply SEARCH/REPLACE edits to multiple files.
 
-            PREFER over multiple fs_apply_search_replace calls when making related changes
-            across 2+ files — gives you transactional safety without git dependency.
+            Two modes (use skip_failed to choose):
+
+            skip_failed=False (default — atomic):
+              If ANY edit fails, ALL files are rolled back. Safe for tightly
+              coupled changes where partial application would break compilation.
+
+            skip_failed=True (partial — recommended for independent files):
+              Failed edits are skipped and reported; successful edits are kept.
+              Use when files are loosely coupled and partial success is useful.
+              Aider pattern: fix failures individually rather than restart everything.
 
             edits_json: JSON array of objects, each with:
               - path: str (file path)
               - search: str (exact code to find)
               - replace: str (replacement code)
-
-            Example:
-              '[{"path":"src/lib.rs","search":"old fn","replace":"new fn"},
-                {"path":"src/main.rs","search":"old call","replace":"new call"}]'
             """
-            # Delegate to _execute_tool which has the full implementation
-            return await self._execute_tool("fs_apply_batch", {"edits_json": edits_json})
+            return await self._execute_tool("fs_apply_batch", {
+                "edits_json":  edits_json,
+                "skip_failed": skip_failed,
+            })
 
     _TOOL_TO_RPC = {
         "fs_read":       ("fs.read",       lambda args: {"path": args["path"]}),
+        "fs_read_range": ("fs.read_range", lambda args: {
+            "path":       args["path"],
+            **({} if not args.get("start_line") else {"start_line": args["start_line"]}),
+            **({} if not args.get("end_line")   else {"end_line":   args["end_line"]}),
+        }),
         "fs_apply_diff": ("fs.apply_diff", lambda args: args),
         "shell_run":     ("shell.run",     lambda args: {"cmd": args["cmd"], "cwd": args.get("cwd", "."), "timeout_s": args.get("timeout_s", 30), "dry_run": False}),
         "git_status":    ("git.status",    lambda _: {}),
@@ -822,6 +863,7 @@ class EvoCLIAgent:
         # restore from memory. No git dependency — always safe even with dirty workdir.
         if name == "fs_apply_batch":
             await emit_event("tool_call_start", {"tool": "fs.apply_batch", "display": "✏️  Batch SEARCH/REPLACE"})
+            skip_failed = bool(args.get("skip_failed", False))
             try:
                 edits = _json.loads(args.get("edits_json", "[]"))
             except Exception as e:
@@ -893,12 +935,28 @@ class EvoCLIAgent:
                         log.warning("fs_apply_batch rollback failed for %s: %s", path, re)
                 # Strip internal _new_content before returning
                 clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
-                await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
-                return _json.dumps({
-                    "ok": False, "rolled_back": True,
-                    "error": "One or more edits failed — all files restored to original content.",
-                    "results": clean_results,
-                }, ensure_ascii=False)
+                if skip_failed:
+                    # skip_failed=True: keep successful edits, only report failures
+                    # Aider pattern: fix failures individually, don't restart everything
+                    log.info("fs_apply_batch(skip_failed=True): %d ok, %d failed — keeping successes",
+                             sum(1 for r in results if r.get("ok")),
+                             sum(1 for r in results if not r.get("ok")))
+                    await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
+                    return _json.dumps({
+                        "ok": False, "rolled_back": False, "partial": True,
+                        "applied": sum(1 for r in results if r.get("ok")),
+                        "failed":  sum(1 for r in results if not r.get("ok")),
+                        "error": "Some edits failed (skip_failed=True: successes kept). Fix the failed ones individually.",
+                        "results": clean_results,
+                    }, ensure_ascii=False)
+                else:
+                    # skip_failed=False (default, atomic): roll back everything
+                    await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
+                    return _json.dumps({
+                        "ok": False, "rolled_back": True,
+                        "error": "One or more edits failed — all files restored. Use skip_failed=True to keep successes.",
+                        "results": clean_results,
+                    }, ensure_ascii=False)
 
             # Phase 3b: Commit all writes — if ANY write fails, restore ALL from originals
             write_errors = []
@@ -1316,14 +1374,16 @@ class EvoCLIAgent:
                      session_id: str = "default") -> AsyncGenerator[str, None]:
         """Stream agent response with multi-turn history support."""
         import asyncio
+        # Read timeout from config [agent] section (default 20s)
+        _ctx_timeout = float((self.config or {}).get("agent", {}).get("context_build_timeout_s", 20))
         try:
             ctx = await asyncio.wait_for(
                 self._build_context(user_input, context_params,
                                     history=prior_history, session_id=session_id),
-                timeout=15.0,  # Context build shouldn't block — memory is pre-warmed
+                timeout=_ctx_timeout,
             )
         except asyncio.TimeoutError:
-            log.debug("_build_context timed out (15s) — using minimal context")
+            log.debug("_build_context timed out (%.0fs) — using minimal context", _ctx_timeout)
             ctx = {}
         full_input = await self._inject_context(user_input, ctx)
 
@@ -1393,16 +1453,20 @@ class EvoCLIAgent:
         
         tools = self._build_tool_definitions()
 
-        # GAP-1: Hard reflection loop constants
+        # GAP-1: Hard reflection loop constants — read from config [agent] section
+        # Allows users to tune via config.toml: [agent] max_reflections = 5
+        _agent_cfg      = (self.config or {}).get("agent", {})
+        MAX_REFLECTIONS = int(_agent_cfg.get("max_reflections", 3))
+        MAX_TOOL_CALLS  = int(_agent_cfg.get("max_tool_calls",  20))
+
         _REFLECTION_TRIGGERS = frozenset({
             "fs_lint_file",        # lint failure → fix errors
             "test_and_capture",    # test failure → fix code
             "fs_apply_search_replace",  # ambiguous match → add more context
         })
-        MAX_REFLECTIONS = 3
         reflection_count = 0
 
-        for _ in range(10):
+        for _ in range(MAX_TOOL_CALLS):
             # Bug fix: _resolve_model() now returns Router group alias ("fast"/"smart").
             # We must resolve the alias to the real model name for litellm.acompletion().
             # Use llm._router.acompletion() which understands the group aliases.
@@ -1527,10 +1591,8 @@ class EvoCLIAgent:
             messages.extend(prior_history)
             log.debug("_stream_litellm: injecting %d history messages", len(prior_history))
         messages.append({"role": "user", "content": user_input})
-        # 20-second timeout on the initial API connection.
-        # 90s was too long — on blocked/misconfigured networks it means the user
-        # stares at a frozen "Streaming..." screen for 90s before seeing any error.
-        # 20s is enough for legitimate slow API starts while failing fast otherwise.
+        # Read stream timeout from config [agent] section (default 30s)
+        _stream_timeout = float((self.config or {}).get("agent", {}).get("stream_timeout_s", 30))
         try:
             response = await asyncio.wait_for(
                 llm._router.acompletion(
@@ -1538,11 +1600,11 @@ class EvoCLIAgent:
                     messages=messages,   # [system] + [history] + [user]
                     stream=True, max_tokens=2048,
                 ),
-                timeout=20.0,
+                timeout=_stream_timeout,
             )
         except asyncio.TimeoutError:
-            log.error("_stream_litellm: LLM API call timed out after 20s (model=%s)", tier)
-            yield "\n\n⚠️ LLM API timed out (20s). Check your API key and network, then try again."
+            log.error("_stream_litellm: LLM API call timed out after %.0fs (model=%s)", _stream_timeout, tier)
+            yield f"\n\n⚠️ LLM API timed out ({_stream_timeout:.0f}s). Check your API key and network, then try again."
             return
         async for chunk in response:
             text = (chunk.choices[0].delta.content or "") if chunk.choices else ""
@@ -1553,7 +1615,20 @@ class EvoCLIAgent:
         """OpenAI function calling format tool definitions（LLM 可见的工具列表）。"""
         return [
             # ── Core tools ─────────────────────────────────────────────
-            {"type": "function", "function": {"name": "fs_read", "description": "Read file contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+            {"type": "function", "function": {"name": "fs_read", "description": "Read file contents. For files >200 lines, prefer fs_read_range to save context.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+            {"type": "function", "function": {
+                "name": "fs_read_range",
+                "description": (
+                    "Read a specific line range from a file (1-indexed, inclusive). "
+                    "PREFER over fs_read for large files — reading lines 50-120 of a 2000-line file "
+                    "uses only 3% of the tokens. Use when you know roughly where the relevant code is."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "path":       {"type": "string", "description": "File path"},
+                    "start_line": {"type": "integer", "description": "First line (1-indexed). Omit or 0 = start of file."},
+                    "end_line":   {"type": "integer", "description": "Last line inclusive (1-indexed). Omit or 0 = end of file."},
+                }, "required": ["path"]},
+            }},
             {"type": "function", "function": {"name": "fs_apply_diff", "description": "Apply unified diff to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "diff": {"type": "string"}, "dry_run": {"type": "boolean"}}, "required": ["path", "diff"]}}},
             {"type": "function", "function": {"name": "shell_run", "description": "Run a shell command (restricted whitelist)", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}, "cwd": {"type": "string"}, "timeout_s": {"type": "integer"}}, "required": ["cmd"]}}},
             {"type": "function", "function": {"name": "memory_recall", "description": "Search memory for relevant context", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}}, "required": ["query"]}}},

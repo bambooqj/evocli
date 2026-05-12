@@ -62,3 +62,6 @@ knowledge_graph = { path = "../knowledge_graph" }
 
 # Regex (for security.rs pattern-based shell command validation)
 regex.workspace = true
+
+# ignore: .gitignore-aware walker (used in index_cmd.rs for progress counting)
+ignore.workspace = true

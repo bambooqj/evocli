@@ -315,6 +315,22 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             # Non-blocking Head/Tail compression check
             asyncio.create_task(_maybe_compress_history(session_id))
 
+            # ── Compress hint: nudge user to /compress when history grows ─────
+            # Read thresholds from config [agent] section (with sensible defaults)
+            cfg_agent = (state.get_config() or {}).get("agent", {})
+            compress_turns  = int(cfg_agent.get("history_compress_turns",  10))
+            compress_tokens = int(cfg_agent.get("history_compress_tokens", 8000))
+            history_len     = len(_st.get_history(session_id))
+            token_est       = _st.get_history_token_estimate(session_id)
+            if history_len >= compress_turns * 2 or token_est >= compress_tokens:
+                asyncio.create_task(emit_event("soul_status", {
+                    "status":  "ready",
+                    "message": (
+                        f"💡 Context is getting long ({history_len // 2} exchanges, ~{token_est} tokens). "
+                        f"Type /compress to free up space for better results."
+                    ),
+                }))
+
     except Exception as e:
         log.error("agent.stream handler crashed: %s\n%s", e, _tb.format_exc())
         await send.stream_chunk(

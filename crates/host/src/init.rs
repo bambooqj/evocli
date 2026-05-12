@@ -359,43 +359,144 @@ fn default_tiers_for(provider: &str) -> LlmTiers {
     }
 }
 
-/// Step 3: LLM API connectivity test (TCP connect to provider endpoint)
+/// Step 3: LLM API connectivity and key validation.
+///
+/// Two-phase check:
+/// 1. TCP connect (proves network path is open)
+/// 2. Minimal API call to validate the key (proves auth works)
+///
+/// The key validation uses the cheapest possible call:
+///   Anthropic / OpenAI: GET /v1/models (no tokens consumed)
+///   DeepSeek:           GET /v1/models
+///
+/// Failure in phase 2 shows a clear "invalid API key" message instead of letting
+/// the user discover the problem on their first real agent call.
 async fn test_llm_connectivity(provider: &str) -> Result<()> {
     use std::time::Duration;
 
-    print!("  Testing {} API... ", provider);
+    print!("  Testing {} connectivity... ", provider);
 
-    // Determine the API host to probe based on provider
+    if provider == "ollama" {
+        println!("⏭  Skipped (Ollama is local)");
+        return Ok(());
+    }
+
     let host = match provider {
         "anthropic" => "api.anthropic.com",
-        "openai" => "api.openai.com",
-        "deepseek" => "api.deepseek.com",
-        _ => {
-            println!("⏭  跳过（Ollama 本地无需测试）");
-            return Ok(());
-        }
+        "openai"    => "api.openai.com",
+        "deepseek"  => "api.deepseek.com",
+        _           => { println!("⏭  Unknown provider, skipped"); return Ok(()); }
     };
 
+    // Phase 1: TCP connect
     let addr = format!("{}:443", host);
-
-    let result = tokio::time::timeout(
+    match tokio::time::timeout(
         Duration::from_secs(5),
         tokio::net::TcpStream::connect(&addr),
-    )
-    .await;
-
-    match result {
-        Ok(Ok(_)) => {
-            println!("✅（连接正常，延迟 < 5s）");
-            Ok(())
-        }
+    ).await {
+        Ok(Ok(_))  => {},
         Ok(Err(e)) => {
-            println!("❌（连接失败: {}）", e);
-            Err(anyhow::anyhow!("无法连接 {} API，请检查网络", provider))
+            println!("❌ (TCP connect failed: {})", e);
+            return Err(anyhow::anyhow!("Cannot reach {} — check network", host));
         }
         Err(_) => {
-            println!("⚠️  超时（可能是网络问题，继续...）");
-            Ok(()) // 超时不阻断初始化
+            println!("⚠️  TCP timeout — continuing (may work behind proxy)");
+            return Ok(());
         }
     }
+
+    println!("✓ (TCP)");
+    print!("  Validating API key...   ");
+
+    // Phase 2: Real API call to validate key
+    // Read key from keyring or environment
+    let api_key = {
+        let from_keyring = crate::keystore::KeyStore::get(provider)
+            .ok()
+            .flatten();
+        from_keyring.or_else(|| {
+            let env_var = match provider {
+                "anthropic" => "ANTHROPIC_API_KEY",
+                "openai"    => "OPENAI_API_KEY",
+                "deepseek"  => "DEEPSEEK_API_KEY",
+                _           => return None,
+            };
+            std::env::var(env_var).ok()
+        })
+    };
+
+    let Some(key) = api_key else {
+        println!("⏭  No key stored yet (set later with evocli init or env var)");
+        return Ok(());
+    };
+
+    // Use reqwest if available; otherwise skip
+    let url = match provider {
+        "anthropic" => "https://api.anthropic.com/v1/models",
+        "openai"    => "https://api.openai.com/v1/models",
+        "deepseek"  => "https://api.deepseek.com/v1/models",
+        _           => { println!("⏭  Skipped"); return Ok(()); }
+    };
+
+    // Build HTTP request manually (avoid reqwest dependency — use std TcpStream + rustls if available)
+    // Simpler: run a minimal curl/powershell check, or just trust the TCP succeeded.
+    // For now, use a basic HTTP/1.1 request via tokio to avoid new Cargo dependencies.
+    let auth_header = if provider == "anthropic" {
+        format!("x-api-key: {}\r\nanthropic-version: 2023-06-01", key)
+    } else {
+        format!("Authorization: Bearer {}", key)
+    };
+
+    // Use Python Soul to make the actual test call (avoids adding reqwest to host)
+    // We do this via a subcommand that spawns a quick Python one-liner
+    let py_check = format!(
+        r#"import urllib.request, sys; req=urllib.request.Request('{}',headers={{{}}}); \
+           resp=urllib.request.urlopen(req,timeout=8); \
+           sys.exit(0 if resp.status==200 else 1)"#,
+        url,
+        if provider == "anthropic" {
+            format!("'x-api-key':'{}','anthropic-version':'2023-06-01'", key)
+        } else {
+            format!("'Authorization':'Bearer {}'", key)
+        }
+    );
+
+    let result = tokio::process::Command::new("python3")
+        .args(["-c", &py_check.replace('\n', " ")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+
+    // Also try `python` on Windows
+    let result = if result.map(|s| s.success()).unwrap_or(false) {
+        Ok(true)
+    } else {
+        tokio::process::Command::new("python")
+            .args(["-c", &py_check.replace('\n', " ")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+    };
+
+    match result {
+        Ok(true) => {
+            println!("✅ API key is valid");
+        }
+        Ok(false) => {
+            println!("❌ API key rejected (401/403)");
+            println!();
+            println!("  Your API key was stored but appears to be invalid.");
+            println!("  Double-check it at {} dashboard.", host);
+            println!("  You can update it later with: evocli init");
+            // Don't bail — let user continue and fix the key later
+        }
+        Err(_) => {
+            println!("⏭  Python not available for key validation — skipped");
+        }
+    }
+
+    Ok(())
 }

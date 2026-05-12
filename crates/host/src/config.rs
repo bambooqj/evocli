@@ -17,6 +17,8 @@ pub struct Config {
     pub security: SecurityConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
     /// Python Soul 脚本路径（evocli init 时自动检测并保存；优先级低于 EVOCLI_SOUL 环境变量）
     #[serde(default)]
     pub soul_script: Option<String>,
@@ -134,6 +136,74 @@ fn default_shell_whitelist() -> Vec<String> {
 }
 fn default_max_episodes() -> usize { 1000 }
 
+/// Agent behaviour tuning — all values configurable in config.toml [agent]
+///
+/// Example config.toml:
+/// ```toml
+/// [agent]
+/// max_tool_calls          = 20   # max tool-call iterations per agent.run()
+/// max_reflections         = 3    # max lint/test reflection retries
+/// stream_timeout_s        = 30   # LLM stream start timeout (seconds)
+/// context_build_timeout_s = 20   # context engine timeout (seconds)
+/// rpc_timeout_ms          = 90000 # Rust→Python RPC timeout (ms)
+/// history_compress_turns  = 10   # compress history after N exchanges
+/// history_compress_tokens = 8000 # or when history exceeds this token estimate
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Maximum tool-call iterations per agent invocation.
+    /// 10 was too low for real "edit → lint → test → commit" flows.
+    #[serde(default = "default_max_tool_calls")]
+    pub max_tool_calls: usize,
+
+    /// Maximum reflection retries on lint/test failure.
+    #[serde(default = "default_max_reflections")]
+    pub max_reflections: usize,
+
+    /// Timeout in seconds for the initial LLM streaming connection.
+    #[serde(default = "default_stream_timeout_s")]
+    pub stream_timeout_s: u64,
+
+    /// Timeout in seconds for the context engine build phase.
+    #[serde(default = "default_context_build_timeout_s")]
+    pub context_build_timeout_s: u64,
+
+    /// Timeout in milliseconds for Rust→Python RPC calls (default: 90s).
+    /// Complex tool calls like `shell.run cargo test` may need > 60s.
+    #[serde(default = "default_rpc_timeout_ms")]
+    pub rpc_timeout_ms: u64,
+
+    /// Compress history after this many message exchanges.
+    #[serde(default = "default_history_compress_turns")]
+    pub history_compress_turns: usize,
+
+    /// Compress history when token estimate exceeds this value.
+    #[serde(default = "default_history_compress_tokens")]
+    pub history_compress_tokens: usize,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_tool_calls:          default_max_tool_calls(),
+            max_reflections:         default_max_reflections(),
+            stream_timeout_s:        default_stream_timeout_s(),
+            context_build_timeout_s: default_context_build_timeout_s(),
+            rpc_timeout_ms:          default_rpc_timeout_ms(),
+            history_compress_turns:  default_history_compress_turns(),
+            history_compress_tokens: default_history_compress_tokens(),
+        }
+    }
+}
+
+fn default_max_tool_calls()          -> usize { 20 }
+fn default_max_reflections()         -> usize { 3 }
+fn default_stream_timeout_s()        -> u64   { 30 }
+fn default_context_build_timeout_s() -> u64   { 20 }
+fn default_rpc_timeout_ms()          -> u64   { 90_000 }
+fn default_history_compress_turns()  -> usize { 10 }
+fn default_history_compress_tokens() -> usize { 8_000 }
+
 fn default_lpa_max_iter()         -> usize { 20 }
 fn default_min_community_size()   -> usize { 2 }
 fn default_blast_radius_depth()   -> usize { 5 }
@@ -185,6 +255,7 @@ impl Default for Config {
             safety:      SafetyConfig::default(),
             security:    SecurityConfig::default(),
             memory:      MemoryConfig::default(),
+            agent:       AgentConfig::default(),
             soul_script: None,
             graph:       GraphConfig::default(),
         }

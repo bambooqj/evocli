@@ -27,6 +27,13 @@ pub async fn dispatch(req: &ToolCallRequest, bridge: Option<&SoulBridge>, cfg: &
             }
             fs_tools::fs_read(args)
         }
+        "fs.read_range" => {
+            if let Some(p) = args["path"].as_str() {
+                security.validate_path_access(&std::path::Path::new(p))?;
+                security.audit_log("fs.read_range", p, true);
+            }
+            fs_tools::fs_read_range(args)
+        }
         "fs.write" => {
             if let Some(p) = args["path"].as_str() {
                 security.validate_path_access(&std::path::Path::new(p))?;

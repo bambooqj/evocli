@@ -15,6 +15,54 @@ pub fn fs_read(args: &Value) -> Result<Value> {
     Ok(Value::String(content))
 }
 
+/// 读取文件指定行范围（1-indexed，inclusive）
+///
+/// 避免把 2000 行文件全部读入上下文——只注入 AI 实际需要的部分。
+/// start_line 和 end_line 均为可选：
+///   - 只传 start_line：从该行读到文件末尾
+///   - 只传 end_line：从文件开头读到该行
+///   - 两者都传：读取指定区间
+///   - 都不传：等同于 fs.read（读全文件）
+pub fn fs_read_range(args: &Value) -> Result<Value> {
+    let path       = get_path(args, "path")?;
+    let start_line = args["start_line"].as_u64().map(|n| n as usize);
+    let end_line   = args["end_line"].as_u64().map(|n| n as usize);
+
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("fs.read_range: cannot read {}", path.display()))?;
+
+    let total_lines = content.lines().count();
+
+    // No range specified → full file (same as fs.read)
+    if start_line.is_none() && end_line.is_none() {
+        return Ok(serde_json::json!({
+            "content": content,
+            "start_line": 1,
+            "end_line": total_lines,
+            "total_lines": total_lines,
+        }));
+    }
+
+    let start = start_line.unwrap_or(1).saturating_sub(1); // 0-indexed
+    let end   = end_line.unwrap_or(total_lines).min(total_lines); // inclusive, 1-indexed → exclusive
+
+    let lines: Vec<&str> = content.lines().collect();
+    let slice = &lines[start..end];
+    let result = slice.join("\n");
+
+    Ok(serde_json::json!({
+        "content":     result,
+        "start_line":  start + 1,    // back to 1-indexed for caller
+        "end_line":    end,
+        "total_lines": total_lines,
+        "note": if total_lines > end || start > 0 {
+            format!("Showing lines {}-{} of {} total. Use fs.read_range with different start_line/end_line to see more.", start + 1, end, total_lines)
+        } else {
+            String::new()
+        },
+    }))
+}
+
 /// 写入文件内容
 pub fn fs_write(args: &Value) -> Result<Value> {
     let path    = get_path(args, "path")?;
