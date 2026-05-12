@@ -31,9 +31,12 @@ log = logging.getLogger("evocli.soul.llm")
 litellm.suppress_debug_info = True
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 
-DEFAULT_MODELS = {
-    "fast": "claude-3-5-haiku-latest",
-    "smart": "claude-sonnet-4-5-20250514",
+# Fallback model names used ONLY when config.toml has no [llm.tiers] section.
+# These match the Rust config.rs defaults (provider=openai).
+# In practice, evocli init always writes correct provider-specific models.
+_FALLBACK_MODELS = {
+    "fast":  "gpt-4o-mini",
+    "smart": "gpt-4o",
 }
 
 
@@ -46,32 +49,45 @@ class LLMClient:
 
     def __init__(self, config: dict | None = None):
         # If no config provided (or empty), auto-load from ~/.evocli/config.toml
-        # This is the normal case when LLMClient is created inside the Soul process
-        # without config being passed explicitly from Rust.
         self._config = config or {}
         if not self._config or not self._config.get("api_key"):
             self._config = self._load_config_from_disk() or self._config
 
         self._provider  = self._config.get("provider", "openai")
         tiers           = self._config.get("tiers", {})
-        self._fast_model  = tiers.get("fast",  DEFAULT_MODELS["fast"])
-        self._smart_model = tiers.get("smart", DEFAULT_MODELS["smart"])
+        self._fast_model  = tiers.get("fast",  _FALLBACK_MODELS["fast"])
+        self._smart_model = tiers.get("smart", _FALLBACK_MODELS["smart"])
         self._base_url  = self._config.get("base_url")
         api_key = self._config.get("api_key")
         if api_key:
             self._ensure_api_key(api_key)
 
+        # ── Read global params from config (Rust is ground truth) ─────────
+        _params = self._config.get("params", {})
+        self._default_max_tokens = int(_params.get("max_tokens", 4096))
+        self._default_temperature = float(_params.get("temperature", 0.7))
+        self._max_retries = int(_params.get("max_retries", 3))
+
+        # ── Task routing: [llm.tasks] section ─────────────────────────────
+        self._tasks = self._config.get("tasks", {})
+
+        # ── Role configs: [llm.roles.<name>] sections ─────────────────────
+        # Each role can have: base_url, api_key, model
+        # Roles take priority over tasks routing when present.
+        self._roles = self._config.get("roles", {})
+
+        # ── Task parameters: [llm.params.<task>] sections ─────────────────
+        self._task_params = {
+            k: v for k, v in _params.items() if isinstance(v, dict)
+        }
+
         # ── litellm.Router ────────────────────────────────────────────────
         model_list = self._build_router_model_list(api_key)
         self._router = Router(
             model_list    = model_list,
-            num_retries   = 3,
-            # Exponential backoff: 5s → 20s → 80s on 429 rate-limit errors.
-            # Original 0.5s caused all 3 retries to exhaust instantly —
-            # Anthropic/OpenAI 429 typically require 20–60s cooldown.
+            num_retries   = self._max_retries,
             retry_after   = 5,
             allowed_fails = 2,
-            # cooldown_time: how long a deployment is marked "unhealthy" after failure
             cooldown_time = 30,
         )
 
@@ -190,6 +206,112 @@ class LLMClient:
                 return "smart"
         return "fast"
 
+    def resolve_task_model(self, task_name: str) -> str:
+        """Resolve the model/tier for a named task from [llm.tasks] config.
+
+        Returns the Router alias ("fast"/"smart") or a specific model name
+        as configured in config.toml [llm.tasks] section.
+
+        This is the primary routing method for fine-grained per-task model
+        selection. All Python Soul callers should use this instead of
+        hardcoding tier="fast" or tier="smart".
+
+        Usage:
+            tier = llm.resolve_task_model("commit")  # → "fast" (from config)
+            tier = llm.resolve_task_model("architect")  # → "smart" (from config)
+            tier = llm.resolve_task_model("code_review")  # → "gpt-4o" (user override)
+        """
+        # Look up in [llm.tasks] (from config.toml via bridge.call("config.get"))
+        # Default: smart for reasoning tasks, fast for routine tasks
+        _TASK_DEFAULTS: dict[str, str] = {
+            "chat":         "smart",
+            "architect":    "smart",
+            "editor":       "fast",
+            "summarize":    "fast",
+            "commit":       "fast",
+            "lint":         "fast",
+            "memory_label": "fast",
+            "code_review":  "smart",
+            "wiki":         "fast",
+        }
+        return self._tasks.get(task_name, _TASK_DEFAULTS.get(task_name, "fast"))
+
+    def get_task_params(self, task_name: str) -> dict:
+        """Get max_tokens and temperature for a named task from [llm.params.<task>] config.
+
+        Returns a dict with keys 'max_tokens' and 'temperature', falling back
+        to global defaults from [llm.params] if the task has no override.
+
+        All hardcoded values (max_tokens=4096, temperature=0.7) in Python files
+        should be replaced with: params = llm.get_task_params("task_name")
+
+        Usage:
+            p = llm.get_task_params("commit")
+            response = await llm.complete(prompt, tier=..., **p)
+        """
+        task_override = self._task_params.get(task_name, {})
+        return {
+            "max_tokens":  int(task_override.get("max_tokens",  self._default_max_tokens)),
+            "temperature": float(task_override.get("temperature", self._default_temperature)),
+        }
+
+    async def complete_for_task(
+        self,
+        task_name: str,
+        prompt: str,
+        *,
+        system: str | None = None,
+        extra_params: dict | None = None,
+    ) -> str:
+        """Complete a prompt for a named task, reading ALL parameters from config.
+
+        Resolution order (highest to lowest priority):
+        1. [llm.roles.<task>] — role has its own base_url/api_key/model
+        2. [llm.tasks.<task>] — task routing (tier alias or model name)
+        3. [llm.params.<task>] — task-specific token/temperature overrides
+        4. [llm] global defaults
+
+        For roles with different providers (e.g. Anthropic for architect, DeepSeek for editor):
+        - Creates a one-shot LLMClient with the role's specific configuration
+        - The role's base_url and api_key override the global settings
+        - Falls back to global settings for any unset fields
+
+        Usage: await llm.complete_for_task("commit", prompt)
+        """
+        role_cfg = self._roles.get(task_name, {}) if isinstance(self._roles, dict) else {}
+
+        if role_cfg and role_cfg.get("model"):
+            # Role has custom config — may use different provider/endpoint
+            model = role_cfg["model"]
+            role_base_url = role_cfg.get("base_url") or self._base_url
+            role_api_key  = role_cfg.get("api_key")  or self._config.get("api_key")
+
+            # Build a temporary config for this role's provider
+            role_config = dict(self._config)
+            if role_base_url:
+                role_config["base_url"] = role_base_url
+            if role_api_key:
+                role_config["api_key"] = role_api_key
+
+            # Create a one-shot client for this role (lightweight — reuses litellm cache)
+            role_client = LLMClient(role_config)
+            params = self.get_task_params(task_name)
+            if extra_params:
+                params.update(extra_params)
+            return await role_client.complete(
+                prompt,
+                model=model,  # bypass tier routing, use exact model
+                system=system,
+                **params,
+            )
+        else:
+            # No role override — use standard tier routing
+            tier   = self.resolve_task_model(task_name)
+            params = self.get_task_params(task_name)
+            if extra_params:
+                params.update(extra_params)
+            return await self.complete(prompt, tier=tier, system=system, **params)
+
     async def complete(
         self,
         prompt: str,
@@ -203,8 +325,7 @@ class LLMClient:
     ) -> str:
         """
         Non-streaming completion. Returns full text.
-        FIX-STREAM-3: 超长文本自动分块处理。
-        当 prompt 超过模型 context window 时，智能压缩而非截断。
+        Prefer complete_for_task() for named tasks — it reads params from config.
         """
         resolved = model if model else self._resolve_model(hint=tier, task_context=task_context)
         prompt = self._maybe_chunk_input(prompt, resolved)

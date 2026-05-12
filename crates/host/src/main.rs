@@ -171,7 +171,7 @@ async fn run_tui(_debug: bool) -> Result<()> {
     // No duplicate setup check needed here.
 
     println!("EvoCLI v{}", env!("CARGO_PKG_VERSION"));
-    println!("  Provider: {}", cfg.llm.provider);
+    println!("  Endpoint: {}", cfg.llm.base_url.as_deref().unwrap_or("(auto)"));
     println!("  Fast:     {}", cfg.llm.tiers.fast);
     println!("  Smart:    {}", cfg.llm.tiers.smart);
     println!("  Soul:     {}", soul_path);

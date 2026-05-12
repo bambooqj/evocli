@@ -26,26 +26,241 @@ pub struct Config {
     pub graph: GraphConfig,
 }
 
+/// LLM connection — only the essentials.
+///
+/// Protocol: OpenAI-compatible by default (works with 99% of providers).
+/// litellm handles protocol differences automatically.
+///
+/// Users fill in THREE things:
+///   base_url  — endpoint URL (any OpenAI-compatible API)
+///   api_key   — stored in OS keyring by evocli init
+///   tiers     — model names to use (fast + smart)
+///
+/// ```toml
+/// [llm]
+/// base_url = "https://api.openai.com/v1"   # OpenAI, or any compatible endpoint
+///
+/// [llm.tiers]
+/// fast  = "gpt-4o-mini"   # routine tasks: edits, commits, summaries
+/// smart = "gpt-4o"        # complex tasks: architecture, code review
+/// ```
+///
+/// Common endpoint examples:
+///   OpenAI:     https://api.openai.com/v1
+///   Anthropic:  (leave blank — litellm auto-detects from "claude-*" model name)
+///   DeepSeek:   https://api.deepseek.com/v1
+///   Groq:       https://api.groq.com/openai/v1
+///   SiliconFlow: https://api.siliconflow.cn/v1
+///   Ollama:     http://localhost:11434  (no key needed)
+///   Custom proxy: https://your-proxy.com/v1
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// Provider: "anthropic" | "openai" | "deepseek" | "ollama"
-    #[serde(default = "default_provider")]
-    pub provider: String,
+    /// Default API endpoint. Any OpenAI-compatible URL, or blank for auto-detection.
+    pub base_url: Option<String>,
+    /// Default API key (stored in OS keyring by evocli init).
+    pub api_key: Option<String>,
+    /// Default model tiers — used when a role has no specific override.
     #[serde(default)]
     pub tiers: LlmTiers,
-    /// Optional API key (plain text fallback — prefer keyring)
-    pub api_key: Option<String>,
-    /// Ollama base URL
-    pub base_url: Option<String>,
+    /// Global and per-task LLM parameters (token limits, temperature, etc.)
+    #[serde(default)]
+    pub params: LlmGlobalParams,
+    /// Per-task model routing (which tier alias each task uses by default)
+    #[serde(default)]
+    pub tasks: LlmTasksConfig,
+    /// Per-role full overrides — each role can have its own provider/model/key.
+    /// Takes priority over [llm.tasks] routing when present.
+    /// Missing fields fall back to the global [llm] settings.
+    #[serde(default)]
+    pub roles: LlmRolesConfig,
 }
 
+/// Per-role LLM configuration — each role can use a completely different provider.
+///
+/// Roles map to the task types in [llm.tasks]. Configure only the roles you want
+/// to customize; the rest fall back to the global [llm] settings.
+///
+/// Example — use Anthropic for planning, DeepSeek for editing, OpenAI for the rest:
+/// ```toml
+/// [llm.roles.architect]
+/// base_url = "https://api.anthropic.com"
+/// model    = "claude-opus-4-7"
+///
+/// [llm.roles.editor]
+/// base_url = "https://api.deepseek.com/v1"
+/// model    = "deepseek-coder"
+///
+/// [llm.roles.code_review]
+/// base_url = "https://api.anthropic.com"
+/// model    = "claude-sonnet-4-7"
+/// api_key  = "sk-ant-..."       # optional per-role key override
+/// ```
+///
+/// Anthropic-specific: when base_url is "https://api.anthropic.com" (or blank
+/// with a "claude-*" model), litellm automatically uses the Anthropic SDK protocol
+/// with the correct auth headers — no extra configuration needed.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmRolesConfig {
+    pub chat:         Option<LlmRoleConfig>,
+    pub architect:    Option<LlmRoleConfig>,
+    pub editor:       Option<LlmRoleConfig>,
+    pub summarize:    Option<LlmRoleConfig>,
+    pub commit:       Option<LlmRoleConfig>,
+    pub lint:         Option<LlmRoleConfig>,
+    pub memory_label: Option<LlmRoleConfig>,
+    pub code_review:  Option<LlmRoleConfig>,
+    pub wiki:         Option<LlmRoleConfig>,
+}
+
+/// Configuration for a single agent role.
+/// All fields are optional — unset fields inherit from the global [llm] section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmRoleConfig {
+    /// Endpoint URL for this role. Falls back to [llm].base_url if not set.
+    pub base_url: Option<String>,
+    /// API key for this role. Falls back to [llm].api_key / keyring if not set.
+    pub api_key:  Option<String>,
+    /// Model name or tier alias ("fast"/"smart") for this role.
+    /// Required: there is no fallback model if this is blank.
+    pub model: String,
+}
+
+/// Global default parameters for all LLM calls.
+/// Individual tasks can override these in [llm.params.<task_name>].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmGlobalParams {
+    /// Default output token limit for all completions
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
+    /// Default sampling temperature (0.0 = deterministic, 1.0 = creative)
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
+    /// Retry count for failed API calls
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Per-task parameter overrides (indexed by task name)
+    #[serde(default)]
+    pub architect:    LlmTaskParams,
+    #[serde(default)]
+    pub editor:       LlmTaskParams,
+    #[serde(default)]
+    pub commit:       LlmTaskParams,
+    #[serde(default)]
+    pub summarize:    LlmTaskParams,
+    #[serde(default)]
+    pub lint:         LlmTaskParams,
+    #[serde(default)]
+    pub memory_label: LlmTaskParams,
+    #[serde(default)]
+    pub code_review:  LlmTaskParams,
+    #[serde(default)]
+    pub wiki:         LlmTaskParams,
+}
+
+impl Default for LlmGlobalParams {
+    fn default() -> Self {
+        Self {
+            max_tokens:   default_max_tokens(),
+            temperature:  default_temperature(),
+            max_retries:  default_max_retries(),
+            architect:    LlmTaskParams { max_tokens: Some(8192), temperature: Some(0.7) },
+            editor:       LlmTaskParams { max_tokens: Some(4096), temperature: Some(0.2) },
+            commit:       LlmTaskParams { max_tokens: Some(120),  temperature: Some(0.3) },
+            summarize:    LlmTaskParams { max_tokens: Some(1500), temperature: Some(0.3) },
+            lint:         LlmTaskParams { max_tokens: Some(2048), temperature: Some(0.0) },
+            memory_label: LlmTaskParams { max_tokens: Some(60),   temperature: Some(0.0) },
+            code_review:  LlmTaskParams { max_tokens: Some(4096), temperature: Some(0.5) },
+            wiki:         LlmTaskParams { max_tokens: Some(400),  temperature: Some(0.4) },
+        }
+    }
+}
+
+/// Per-task parameter overrides (both optional — falls back to global defaults)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmTaskParams {
+    pub max_tokens:  Option<usize>,
+    pub temperature: Option<f64>,
+}
+
+/// Per-task model routing.
+/// Each field is either a tier alias ("fast"/"smart") or a specific model name.
+/// This is the core of the fine-grained routing system — users control exactly
+/// which model handles each type of work.
+///
+/// Example config.toml:
+/// ```toml
+/// [llm.tasks]
+/// chat       = "smart"              # tier alias
+/// architect  = "smart"
+/// editor     = "fast"
+/// commit     = "fast"
+/// summarize  = "fast"
+/// lint       = "fast"
+/// code_review = "claude-opus-4-7"  # specific model override
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmTasksConfig {
+    /// Main conversation and generic agent requests
+    #[serde(default = "tier_smart")]
+    pub chat:         String,
+    /// Architect mode planning (system design, multi-file analysis)
+    #[serde(default = "tier_smart")]
+    pub architect:    String,
+    /// Code editing (SEARCH/REPLACE, precise changes — fast model usually fine)
+    #[serde(default = "tier_fast")]
+    pub editor:       String,
+    /// Session compression and context summarization
+    #[serde(default = "tier_fast")]
+    pub summarize:    String,
+    /// Commit message generation
+    #[serde(default = "tier_fast")]
+    pub commit:       String,
+    /// Lint/test output analysis and fix suggestions
+    #[serde(default = "tier_fast")]
+    pub lint:         String,
+    /// Memory classification (MemRouter labeling)
+    #[serde(default = "tier_fast")]
+    pub memory_label: String,
+    /// Code review (needs deeper reasoning)
+    #[serde(default = "tier_smart")]
+    pub code_review:  String,
+    /// Wiki and documentation generation
+    #[serde(default = "tier_fast")]
+    pub wiki:         String,
+}
+
+impl Default for LlmTasksConfig {
+    fn default() -> Self {
+        Self {
+            chat:         tier_smart(),
+            architect:    tier_smart(),
+            editor:       tier_fast(),
+            summarize:    tier_fast(),
+            commit:       tier_fast(),
+            lint:         tier_fast(),
+            memory_label: tier_fast(),
+            code_review:  tier_smart(),
+            wiki:         tier_fast(),
+        }
+    }
+}
+
+/// Model name tiers — user fills these in with whatever their endpoint provides.
+///
+/// No defaults are provided because model names are endpoint-specific.
+/// evocli init will prompt you to enter these.
+///
+/// Use tier aliases ("fast"/"smart") in [llm.tasks] to route tasks,
+/// or specify the full model name for per-task overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmTiers {
-    /// Fast tier model (e.g. claude-3-5-haiku-latest, gpt-4o-mini)
-    #[serde(default = "default_fast_model")]
+    /// Fast/cheap model — used for: edits, commits, summaries, lint feedback
+    /// Examples: gpt-4o-mini, claude-haiku-4-5, deepseek-chat, qwen2.5-coder:7b
+    #[serde(default)]
     pub fast: String,
-    /// Smart tier model (e.g. claude-sonnet-4-5-20250514, gpt-4o)
-    #[serde(default = "default_smart_model")]
+    /// Smart/powerful model — used for: architecture, code review, planning
+    /// Examples: gpt-4o, claude-sonnet-4-7, deepseek-reasoner, qwen2.5-coder:32b
+    #[serde(default)]
     pub smart: String,
 }
 
@@ -132,11 +347,19 @@ pub struct MemoryConfig {
 
 // ── Defaults ─────────────────────────────────────────────
 
-fn default_provider() -> String { "anthropic".into() }
-fn default_fast_model() -> String { "claude-3-5-haiku-latest".into() }
-fn default_smart_model() -> String { "claude-sonnet-4-5-20250514".into() }
+fn default_provider() -> String { "openai".into() }
+// Global defaults use OpenAI since it's the most widely available provider.
+// These are overridden by evocli init based on the selected provider.
+// Users should set [llm.tiers] in config.toml for their actual provider.
+fn default_fast_model()  -> String { "gpt-4o-mini".into() }
+fn default_smart_model() -> String { "gpt-4o".into() }
 fn default_max_total() -> usize { 128_000 }
 fn default_max_code() -> usize { 32_000 }
+fn default_max_tokens()    -> usize { 4096 }
+fn default_temperature()   -> f64   { 0.7 }
+fn default_max_retries()   -> u32   { 3 }
+fn tier_fast()  -> String { "fast".into() }
+fn tier_smart() -> String { "smart".into() }
 fn default_shell_whitelist() -> Vec<String> {
     vec![
         "cargo *".into(), "npm *".into(), "git *".into(),
@@ -275,22 +498,16 @@ impl Default for Config {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            provider: default_provider(),
-            tiers: LlmTiers::default(),
-            api_key: None,
             base_url: None,
+            api_key:  None,
+            tiers:    LlmTiers::default(),
+            params:   LlmGlobalParams::default(),
+            tasks:    LlmTasksConfig::default(),
+            roles:    LlmRolesConfig::default(),
         }
     }
 }
-
-impl Default for LlmTiers {
-    fn default() -> Self {
-        Self {
-            fast: default_fast_model(),
-            smart: default_smart_model(),
-        }
-    }
-}
+// LlmTiers derives Default → fast="" smart="" (user must configure)
 
 impl Default for ContextConfig {
     fn default() -> Self {

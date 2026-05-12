@@ -54,13 +54,10 @@ fn cmd_show() -> Result<()> {
     println!();
 
     println!("  [LLM]");
-    println!("  provider          = {:?}", cfg.llm.provider);
+    println!("  base_url          = {}", cfg.llm.base_url.as_deref().unwrap_or("(auto-detect from model name)"));
     println!("  tiers.fast        = {:?}", cfg.llm.tiers.fast);
     println!("  tiers.smart       = {:?}", cfg.llm.tiers.smart);
-    println!("  api_key           = {}", if cfg.llm.api_key.is_some() { "*** (set)" } else { "(not set — using keyring or env var)" });
-    if let Some(url) = &cfg.llm.base_url {
-        println!("  base_url          = {:?}", url);
-    }
+    println!("  api_key           = {}", if cfg.llm.api_key.is_some() { "*** (set)" } else { "(keyring / env var)" });
     println!();
 
     println!("  [Context]");
@@ -179,11 +176,10 @@ fn cmd_set(key: &str, value: &str) -> Result<()> {
     let mut cfg = Config::load_or_default()?;
 
     match key {
-        "llm.provider"  => cfg.llm.provider = value.to_string(),
-        "llm.tiers.fast"  => cfg.llm.tiers.fast  = value.to_string(),
-        "llm.tiers.smart" => cfg.llm.tiers.smart = value.to_string(),
         "llm.base_url"    => cfg.llm.base_url = Some(value.to_string()),
         "llm.api_key"     => cfg.llm.api_key  = Some(value.to_string()),
+        "llm.tiers.fast"  => cfg.llm.tiers.fast  = value.to_string(),
+        "llm.tiers.smart" => cfg.llm.tiers.smart = value.to_string(),
         "context.max_total" => cfg.context.max_total = value.parse().context("Expected integer")?,
         "context.max_code"  => cfg.context.max_code  = value.parse().context("Expected integer")?,
         "safety.auto_approve_writes" => cfg.safety.auto_approve_writes = value.parse().context("Expected true/false")?,

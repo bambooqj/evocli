@@ -1,19 +1,18 @@
 //! Init wizard — `evocli init` interactive setup
 //!
-//! 4 steps:
-//!   1. Select LLM Provider
-//!   2. Enter API Key → store in keyring
-//!   3. Connectivity test (ping LLM via Python Soul)
-//!   4. Create directory structure
+//! Asks for exactly what's needed:
+//!   1. Base URL  — any OpenAI-compatible endpoint
+//!   2. API Key   — stored in OS keyring
+//!   3. Model names (fast + smart) — you fill in whatever your endpoint provides
+//!   4. Directory structure
+//!   5. Managed Python environment
+//!   6. AGENTS.md project rules
 
 use anyhow::{Context, Result};
-use dialoguer::{Input, Password, Select};
+use dialoguer::{Confirm, Input, Password};
 
 use crate::config::{Config, LlmTiers};
 use crate::keystore::KeyStore;
-
-/// Available LLM providers
-const PROVIDERS: &[&str] = &["Anthropic", "OpenAI", "DeepSeek", "Ollama"];
 
 /// Generate a starter AGENTS.md template for the current project.
 /// The AI reads this file automatically at the start of every session.
@@ -82,63 +81,117 @@ pub async fn run_init() -> Result<()> {
     println!("  EvoCLI Setup Wizard");
     println!("  ===================");
     println!();
+    println!("  Fill in your LLM endpoint details.");
+    println!("  Any OpenAI-compatible API works (OpenAI, DeepSeek, Groq, SiliconFlow,");
+    println!("  local Ollama, custom proxy, etc.).");
+    println!();
 
     let mut config = Config::load_or_default()?;
 
-    // ── Step 1: Select Provider ─────────────────────────
-    let provider_idx = Select::new()
-        .with_prompt("Step 1/4 — Select LLM provider")
-        .items(PROVIDERS)
-        .default(0)
-        .interact()
-        .context("Provider selection cancelled")?;
-
-    let provider = PROVIDERS[provider_idx].to_lowercase();
-    config.llm.provider = provider.clone();
-
-    // Set default models based on provider
-    config.llm.tiers = default_tiers_for(&provider);
-
-    println!("  → Provider: {}", PROVIDERS[provider_idx]);
-    println!("  → Fast model: {}", config.llm.tiers.fast);
-    println!("  → Smart model: {}", config.llm.tiers.smart);
+    // ── Step 1: Base URL ──────────────────────────────────
+    println!("[1/6] API Endpoint");
+    println!("  Common endpoints:");
+    println!("    OpenAI:      https://api.openai.com/v1");
+    println!("    DeepSeek:    https://api.deepseek.com/v1");
+    println!("    Groq:        https://api.groq.com/openai/v1");
+    println!("    SiliconFlow: https://api.siliconflow.cn/v1");
+    println!("    Ollama:      http://localhost:11434");
+    println!("    Anthropic:   (leave blank — detected from model name)");
     println!();
 
-    // ── Step 2: API Key ─────────────────────────────────
-    if provider == "ollama" {
-        // Ollama runs locally, no API key needed
-        let base_url: String = Input::new()
-            .with_prompt("Step 2/4 — Ollama base URL")
-            .default("http://localhost:11434".into())
-            .interact_text()
-            .context("URL input cancelled")?;
-        config.llm.base_url = Some(base_url);
-        println!("  → No API key needed for Ollama");
-    } else {
-        let api_key = Password::new()
-            .with_prompt(format!("Step 2/4 — Enter {} API key", PROVIDERS[provider_idx]))
-            .interact()
-            .context("API key input cancelled")?;
+    let current_url = config.llm.base_url.as_deref().unwrap_or("");
+    let base_url: String = Input::new()
+        .with_prompt("  Base URL (leave blank for OpenAI default)")
+        .default(current_url.to_string())
+        .allow_empty(true)
+        .interact_text()
+        .context("URL input cancelled")?;
 
-        if api_key.is_empty() {
-            println!("  ⚠ No API key provided — you can set it later with environment variable");
-        } else {
-            // Store in OS keyring
-            match KeyStore::set(&provider, &api_key) {
-                Ok(()) => println!("  → API key stored in OS credential manager ✓"),
-                Err(e) => {
-                    tracing::warn!("Keyring storage failed: {}", e);
-                    println!("  ⚠ Keyring unavailable, storing in config.toml (less secure)");
-                    config.llm.api_key = Some(api_key);
-                }
+    config.llm.base_url = if base_url.trim().is_empty() {
+        None  // litellm will use each model's default endpoint
+    } else {
+        Some(base_url.trim().to_string())
+    };
+    println!("  ✓  Endpoint: {}", config.llm.base_url.as_deref().unwrap_or("(auto from model name)"));
+    println!();
+
+    // ── Step 2: API Key ───────────────────────────────────
+    println!("[2/6] API Key");
+    println!("  Stored securely in OS credential manager (not in config.toml).");
+    println!("  Leave blank to configure later via environment variable.");
+    println!();
+
+    // Detect a reasonable service name for keyring storage
+    let keyring_service = config.llm.base_url.as_deref()
+        .and_then(|url| url.split("//").nth(1))
+        .and_then(|host| host.split('/').next())
+        .unwrap_or("default");
+
+    let api_key = Password::new()
+        .with_prompt(format!("  API Key for {}", keyring_service))
+        .allow_empty_password(true)
+        .interact()
+        .context("API key input cancelled")?;
+
+    if !api_key.is_empty() {
+        match KeyStore::set(keyring_service, &api_key) {
+            Ok(()) => println!("  ✓  API key stored in OS credential manager"),
+            Err(e) => {
+                tracing::warn!("Keyring storage failed: {}", e);
+                println!("  ⚠  Keyring unavailable, storing in config.toml (less secure)");
+                config.llm.api_key = Some(api_key);
             }
         }
+    } else {
+        println!("  ⚠  No key provided — set it later via environment variable or re-run init");
     }
     println!();
 
-    // ── Step 3: Connectivity Test ───────────────────────
-    println!("Step 3/6 — Connectivity test");
-    test_llm_connectivity(&provider).await?;
+    // ── Step 3: Model Names ───────────────────────────────
+    println!("[3/6] Model Names");
+    println!("  Enter the model names your endpoint provides.");
+    println!("  'fast' = cheap/quick (edits, commits, summaries)");
+    println!("  'smart' = powerful (architecture, code review, planning)");
+    println!();
+
+    let fast_prompt = format!(
+        "  Fast model{}",
+        if config.llm.tiers.fast.is_empty() { " (e.g. gpt-4o-mini, deepseek-chat, qwen2.5-coder:7b)".to_string() }
+        else { format!(" [{}]", config.llm.tiers.fast) }
+    );
+    let fast: String = Input::new()
+        .with_prompt(fast_prompt)
+        .default(config.llm.tiers.fast.clone())
+        .allow_empty(false)
+        .interact_text()
+        .context("Fast model input cancelled")?;
+
+    let smart_prompt = format!(
+        "  Smart model{}",
+        if config.llm.tiers.smart.is_empty() { " (e.g. gpt-4o, deepseek-reasoner, qwen2.5-coder:32b)".to_string() }
+        else { format!(" [{}]", config.llm.tiers.smart) }
+    );
+    let smart: String = Input::new()
+        .with_prompt(smart_prompt)
+        .default(config.llm.tiers.smart.clone())
+        .allow_empty(false)
+        .interact_text()
+        .context("Smart model input cancelled")?;
+
+    config.llm.tiers = LlmTiers { fast: fast.trim().to_string(), smart: smart.trim().to_string() };
+    println!("  ✓  fast  = {}", config.llm.tiers.fast);
+    println!("  ✓  smart = {}", config.llm.tiers.smart);
+    println!();
+
+    // ── Step 3.5: Test connectivity ───────────────────────
+    println!("[3.5/6] Testing connectivity...");
+    let endpoint_host = config.llm.base_url.as_deref().unwrap_or("api.openai.com");
+    let host = endpoint_host.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(endpoint_host);
+    test_llm_connectivity_simple(host).await;
     println!();
 
     // ── Step 4: Create Directory Structure ──────────────
@@ -436,157 +489,55 @@ print("  done")
 }
 
 
+/// Map each provider to its current recommended fast/smart models.
+///
+/// These are updated to reflect models available as of 2025.
+/// Users can override in config.toml [llm.tiers] at any time.
 fn default_tiers_for(provider: &str) -> LlmTiers {
     match provider {
         "anthropic" => LlmTiers {
-            fast: "claude-3-5-haiku-latest".into(),
-            smart: "claude-sonnet-4-5-20250514".into(),
+            // claude-haiku-4-5 = fast/cheap, claude-sonnet-4-7 = balanced smart
+            fast:  "claude-haiku-4-5".into(),
+            smart: "claude-sonnet-4-7".into(),
         },
         "openai" => LlmTiers {
-            fast: "gpt-4o-mini".into(),
+            // gpt-4o-mini = fast, gpt-4o = smart (universally available)
+            fast:  "gpt-4o-mini".into(),
             smart: "gpt-4o".into(),
         },
         "deepseek" => LlmTiers {
-            fast: "deepseek-chat".into(),
+            // deepseek-chat = fast, deepseek-reasoner = smart (chain-of-thought)
+            fast:  "deepseek-chat".into(),
             smart: "deepseek-reasoner".into(),
         },
         "ollama" => LlmTiers {
-            fast: "qwen2.5-coder:7b".into(),
+            // Local models: small for fast tasks, larger for reasoning
+            fast:  "qwen2.5-coder:7b".into(),
             smart: "qwen2.5-coder:32b".into(),
         },
         _ => LlmTiers::default(),
     }
 }
 
-/// Step 3: LLM API connectivity and key validation.
-///
-/// Two-phase check:
-/// 1. TCP connect (proves network path is open)
-/// 2. Minimal API call to validate the key (proves auth works)
-///
-/// The key validation uses the cheapest possible call:
-///   Anthropic / OpenAI: GET /v1/models (no tokens consumed)
-///   DeepSeek:           GET /v1/models
-///
-/// Failure in phase 2 shows a clear "invalid API key" message instead of letting
-/// the user discover the problem on their first real agent call.
-async fn test_llm_connectivity(provider: &str) -> Result<()> {
+/// Simple TCP connectivity test — just checks if the host is reachable.
+/// We no longer do provider-specific validation here; users verify on first use.
+async fn test_llm_connectivity_simple(host: &str) {
     use std::time::Duration;
+    print!("  Testing connection to {}... ", host);
 
-    print!("  Testing {} connectivity... ", provider);
-
-    if provider == "ollama" {
-        println!("⏭  Skipped (Ollama is local)");
-        return Ok(());
+    // Skip localhost (Ollama, LM Studio, etc.)
+    if host.starts_with("localhost") || host.starts_with("127.") || host.starts_with("0.0.0.0") {
+        println!("⏭  local endpoint (skipped)");
+        return;
     }
 
-    let host = match provider {
-        "anthropic" => "api.anthropic.com",
-        "openai"    => "api.openai.com",
-        "deepseek"  => "api.deepseek.com",
-        _           => { println!("⏭  Unknown provider, skipped"); return Ok(()); }
-    };
-
-    // Phase 1: TCP connect
-    let addr = format!("{}:443", host);
+    let addr = format!("{}:443", host.split(':').next().unwrap_or(host));
     match tokio::time::timeout(
         Duration::from_secs(5),
         tokio::net::TcpStream::connect(&addr),
     ).await {
-        Ok(Ok(_))  => {},
-        Ok(Err(e)) => {
-            println!("❌ (TCP connect failed: {})", e);
-            return Err(anyhow::anyhow!("Cannot reach {} — check network", host));
-        }
-        Err(_) => {
-            println!("⚠️  TCP timeout — continuing (may work behind proxy)");
-            return Ok(());
-        }
+        Ok(Ok(_))  => println!("✓  reachable"),
+        Ok(Err(_)) => println!("⚠  cannot connect (check network/VPN)"),
+        Err(_)     => println!("⚠  timeout (may work behind proxy — continuing)"),
     }
-
-    println!("✓ (TCP)");
-    print!("  Validating API key...   ");
-
-    // Phase 2: Real API call to validate key
-    // Read key from keyring or environment
-    let api_key = {
-        let from_keyring = crate::keystore::KeyStore::get(provider)
-            .ok()
-            .flatten();
-        from_keyring.or_else(|| {
-            let env_var = match provider {
-                "anthropic" => "ANTHROPIC_API_KEY",
-                "openai"    => "OPENAI_API_KEY",
-                "deepseek"  => "DEEPSEEK_API_KEY",
-                _           => return None,
-            };
-            std::env::var(env_var).ok()
-        })
-    };
-
-    let Some(key) = api_key else {
-        println!("⏭  No key stored yet (set later with evocli init or env var)");
-        return Ok(());
-    };
-
-    // Use reqwest if available; otherwise skip
-    let url = match provider {
-        "anthropic" => "https://api.anthropic.com/v1/models",
-        "openai"    => "https://api.openai.com/v1/models",
-        "deepseek"  => "https://api.deepseek.com/v1/models",
-        _           => { println!("⏭  Skipped"); return Ok(()); }
-    };
-
-    // Use Python Soul to make the actual test call (avoids adding reqwest to host)
-    // We do this via a subcommand that spawns a quick Python one-liner
-    let auth_headers = if provider == "anthropic" {
-        format!("'x-api-key':'{}','anthropic-version':'2023-06-01'", key)
-    } else {
-        format!("'Authorization':'Bearer {}'", key)
-    };
-    let py_check = format!(
-        r#"import urllib.request, sys; req=urllib.request.Request('{}',headers={{{}}}); \
-           resp=urllib.request.urlopen(req,timeout=8); \
-           sys.exit(0 if resp.status==200 else 1)"#,
-        url, auth_headers
-    );
-
-    let result = tokio::process::Command::new("python3")
-        .args(["-c", &py_check.replace('\n', " ")])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-
-    // Also try `python` on Windows
-    let result = if result.map(|s| s.success()).unwrap_or(false) {
-        Ok(true)
-    } else {
-        tokio::process::Command::new("python")
-            .args(["-c", &py_check.replace('\n', " ")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-    };
-
-    match result {
-        Ok(true) => {
-            println!("✅ API key is valid");
-        }
-        Ok(false) => {
-            println!("❌ API key rejected (401/403)");
-            println!();
-            println!("  Your API key was stored but appears to be invalid.");
-            println!("  Double-check it at {} dashboard.", host);
-            println!("  You can update it later with: evocli init");
-            // Don't bail — let user continue and fix the key later
-        }
-        Err(_) => {
-            println!("⏭  Python not available for key validation — skipped");
-        }
-    }
-
-    Ok(())
 }
