@@ -395,6 +395,24 @@ Built: $(Get-Date -Format 'yyyy-MM-dd')
 Set-Content "$DistDir\README.md" $readmeContent -Encoding UTF8
 Write-Host "  ✓  README.md" -ForegroundColor Green
 
+# ── Override setup scripts with the authoritative versions ─────────
+# The build script generates simplified inline setup scripts above.
+# We replace them with the maintained versions from scripts/ directory
+# which include: -Clean / -Force flags, proper error handling, and
+# step-by-step feedback for the user.
+$AuthoritativeSetupPs1 = Join-Path $PSScriptRoot "setup_dist.ps1"
+$AuthoritativeSetupSh  = Join-Path $PSScriptRoot "setup_dist.sh"
+if (Test-Path $AuthoritativeSetupPs1) {
+    Copy-Item $AuthoritativeSetupPs1 "$DistDir\setup.ps1" -Force
+    Write-Host "  ✓  setup.ps1 (authoritative)" -ForegroundColor Green
+}
+if (Test-Path $AuthoritativeSetupSh) {
+    $utf8noBom = New-Object System.Text.UTF8Encoding $false
+    $content = Get-Content $AuthoritativeSetupSh -Raw
+    [System.IO.File]::WriteAllText("$DistDir\setup.sh", $content, $utf8noBom)
+    Write-Host "  ✓  setup.sh (authoritative)" -ForegroundColor Green
+}
+
 # ── Summary ─────────────────────────────────────────────────────────
 $allFiles = Get-ChildItem $DistDir -Recurse -File
 $totalSz  = [math]::Round(($allFiles | Measure-Object Length -Sum).Sum / 1MB, 1)
