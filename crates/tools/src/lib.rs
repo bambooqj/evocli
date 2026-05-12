@@ -212,11 +212,44 @@ pub fn run_command(
     }
 
     // ── Execute ──
-    let shell_cmd = if cfg!(target_os = "windows") {
-        let mut c = Command::new("cmd");
-        c.args(["/C", cmd_trimmed]);
-        c
-    } else {
+    // Shell selection strategy:
+    //   Linux/macOS: sh -c (POSIX, supports &&, ||, pipes, redirects, variables)
+    //   Windows priority order:
+    //     1. bash (Git Bash / WSL)  — full bash support including && chains
+    //     2. pwsh (PowerShell 7+)   — supports && operator, good Unix alias coverage
+    //     3. powershell (PS 5.1)    — built-in fallback; rewrite && to ; for compatibility
+    //
+    // Shell detection cached per-process so startup only checks once.
+    #[cfg(target_os = "windows")]
+    let shell_cmd = {
+        // 0 = bash, 1 = pwsh, 2 = powershell(PS5)
+        static WIN_SHELL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+        let shell_id = *WIN_SHELL.get_or_init(|| {
+            if std::process::Command::new("bash").args(["--version"])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false) { return 0u8; }
+            if std::process::Command::new("pwsh").args(["--version"])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false) { return 1u8; }
+            2u8
+        });
+
+        // PowerShell 5.1 doesn't support &&; rewrite to ; so chained commands still run.
+        let effective_cmd: std::borrow::Cow<str> = if shell_id == 2 {
+            std::borrow::Cow::Owned(cmd_trimmed.replace("&&", ";").replace("||", ";"))
+        } else {
+            std::borrow::Cow::Borrowed(cmd_trimmed)
+        };
+
+        match shell_id {
+            0 => { let mut c = Command::new("bash"); c.args(["-c", effective_cmd.as_ref()]); c }
+            1 => { let mut c = Command::new("pwsh"); c.args(["-NoProfile", "-NonInteractive", "-Command", effective_cmd.as_ref()]); c }
+            _ => { let mut c = Command::new("powershell"); c.args(["-NoProfile", "-NonInteractive", "-Command", effective_cmd.as_ref()]); c }
+        }
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let shell_cmd = {
         let mut c = Command::new("sh");
         c.args(["-c", cmd_trimmed]);
         c

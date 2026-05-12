@@ -19,6 +19,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub tui: TuiConfig,
     /// Python Soul 脚本路径（evocli init 时自动检测并保存；优先级低于 EVOCLI_SOUL 环境变量）
     #[serde(default)]
     pub soul_script: Option<String>,
@@ -594,6 +596,39 @@ impl Default for GraphConfig {
     }
 }
 
+/// TUI 显示配置（config.toml [tui] 节）
+///
+/// ```toml
+/// [tui]
+/// # 是否启用鼠标捕获（影响原生文本选择和滚轮行为）
+/// #
+/// # false（默认）：
+/// #   - 终端原生文本选择/复制 完全可用（点击拖拽选择，Ctrl+C 或右键复制）
+/// #   - 鼠标滚轮不控制消息列表（改用键盘：PageUp/Down, Home/End）
+/// #   - 推荐大多数用户使用此模式
+/// #
+/// # true：
+/// #   - 鼠标滚轮控制消息列表滚动
+/// #   - 原生文本选择被屏蔽（改用 Ctrl+Y 复制最后一条 AI 消息）
+/// #   - 在 Windows Terminal 中按住 Shift 可绕过捕获做原生选择
+/// enable_mouse = false
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TuiConfig {
+    /// Enable terminal mouse capture. Default: false.
+    ///
+    /// false = native text selection/copy works; PageUp/Down scrolls messages.
+    /// true  = mouse wheel scrolls messages; native selection blocked (use Ctrl+Y to copy).
+    #[serde(default)]
+    pub enable_mouse: bool,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self { enable_mouse: false }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -603,6 +638,7 @@ impl Default for Config {
             security:    SecurityConfig::default(),
             memory:      MemoryConfig::default(),
             agent:       AgentConfig::default(),
+            tui:         TuiConfig::default(),
             soul_script: None,
             graph:       GraphConfig::default(),
         }
@@ -755,6 +791,33 @@ impl Config {
                  Add extra_blocked_patterns to config.toml for custom restrictions."
             );
             config.security.allow_all_commands = true;
+        }
+
+        // ── Path access migration ─────────────────────────────────────────────
+        // Old builds defaulted to allow_all_paths = false with a hardcoded deny list.
+        // New builds default to allow_all_paths = true (no path restrictions).
+        // If the loaded config has allow_all_paths=false AND the deny_paths list
+        // matches the old hardcoded defaults (user never customized it), migrate to
+        // allow_all_paths=true so the AI can read project files freely.
+        let old_default_denied = default_denied_paths();
+        let user_denied_set: std::collections::HashSet<&str> =
+            config.security.denied_paths.iter().map(|s| s.as_str()).collect();
+        let old_default_set: std::collections::HashSet<&str> =
+            old_default_denied.iter().map(|s| s.as_str()).collect();
+        let is_default_deny_list = user_denied_set == old_default_set
+            || config.security.denied_paths.is_empty();
+
+        if !config.security.allow_all_paths
+            && config.security.extra_denied_paths.is_empty()
+            && is_default_deny_list
+        {
+            tracing::info!(
+                "[Config] Migrating security.allow_all_paths false→true (no path restrictions). \
+                 The AI can now read all project files. Add denied_paths to config.toml \
+                 to restrict specific paths."
+            );
+            config.security.allow_all_paths = true;
+            config.security.denied_paths = vec![];
         }
 
         Ok(config)

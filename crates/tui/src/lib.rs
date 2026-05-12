@@ -24,17 +24,25 @@ use app::{App, AppState, ChatMessage, StepStatus};
 use event_handler::EventAction;
 use soul_bridge::{SoulBridge, StreamChunk};
 
-/// Cleanup guard — restores terminal on drop (even on panic / early return)
-struct CleanupGuard;
+/// Cleanup guard — restores terminal on drop (even on panic / early return).
+/// Tracks whether mouse capture was enabled so cleanup matches setup.
+struct CleanupGuard { mouse_enabled: bool }
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(),
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            LeaveAlternateScreen,
-        );
+        if self.mouse_enabled {
+            let _ = execute!(io::stdout(),
+                DisableMouseCapture,
+                DisableBracketedPaste,
+                LeaveAlternateScreen,
+            );
+        } else {
+            let _ = execute!(io::stdout(),
+                DisableBracketedPaste,
+                LeaveAlternateScreen,
+            );
+        }
     }
 }
 
@@ -44,18 +52,30 @@ impl Drop for CleanupGuard {
 /// `model_name` is displayed in the title bar.
 /// `resume_session` — if Some(session_id), inject a resume message on startup.
 /// `first_chunk_timeout_s` — how long to wait for the first stream chunk before showing error.
-pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Option<&str>, max_context_tokens: usize, first_chunk_timeout_s: u64) -> Result<()> {
+/// `enable_mouse` — if true, capture mouse events (wheel scroll); if false, native terminal
+///   text selection/copy works but mouse wheel is inactive (use PageUp/Down keyboard shortcuts).
+pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Option<&str>, max_context_tokens: usize, first_chunk_timeout_s: u64, enable_mouse: bool) -> Result<()> {
     // ── Setup terminal ──────────────────────────────────
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,      // mouse scroll support
-        EnableBracketedPaste,    // prevent paste lag (batch paste as single event)
-    )?;
+    if enable_mouse {
+        execute!(stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,      // mouse scroll; disables native text selection
+            EnableBracketedPaste,
+        )?;
+    } else {
+        execute!(stdout,
+            EnterAlternateScreen,
+            // No EnableMouseCapture → terminal handles text selection natively.
+            // Users can click+drag to select text and use Ctrl+C/right-click to copy.
+            // Scrolling uses PageUp/Down/Home/End keyboard shortcuts.
+            EnableBracketedPaste,
+        )?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let _guard = CleanupGuard;
+    let _guard = CleanupGuard { mouse_enabled: enable_mouse };
 
     // ── App state + textarea ────────────────────────────
     let mut app = App::new(model_name.to_string(), max_context_tokens);
@@ -291,12 +311,10 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
                         terminal.draw(|f| ui::draw(f, &mut app, &textarea))?;
                     }
 
-                    // Mouse scroll wheel — enables natural scrolling without key presses.
-                    // CRITICAL: always call terminal.draw() immediately after scroll.
-                    // Previously: relied on the loop-top conditional draw, which is SKIPPED
-                    // during streaming (is_streaming=true, cache_dirty=false). Users couldn't
-                    // scroll while the AI was responding, and sometimes couldn't scroll at all.
-                    crossterm::event::Event::Mouse(mouse) => {
+                    // Mouse scroll wheel — only active when enable_mouse=true.
+                    // When enable_mouse=false, mouse events are never sent by the terminal,
+                    // so this branch is unreachable. Guarded here for clarity.
+                    crossterm::event::Event::Mouse(mouse) if enable_mouse => {
                         use crossterm::event::MouseEventKind;
                         let scrolled = match mouse.kind {
                             MouseEventKind::ScrollUp   => { app.scroll_up_n(5);   true }
@@ -304,8 +322,6 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
                             _ => false,
                         };
                         if scrolled {
-                            // Force immediate redraw — bypasses all throttle logic.
-                            // Scroll MUST feel instant regardless of streaming state.
                             app.cache_dirty = true;
                             terminal.draw(|f| ui::draw(f, &mut app, &textarea))?;
                         }

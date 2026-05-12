@@ -278,15 +278,28 @@ pub fn handle_key_event(
                     .join("\n");
                 let shortcuts = "\
 Keyboard shortcuts:\n\
+  PageUp / PageDown        Scroll chat (always works)\n\
+  Home / End               Scroll to top / bottom\n\
+  Alt+Up / Alt+Down        Scroll 5 rows fast\n\
   Ctrl+Y                   Copy last AI message to clipboard\n\
   Ctrl+C                   Quit\n\
   Ctrl+L                   Clear screen\n\
-  PageUp / PageDown        Scroll chat\n\
-  Home / End               Scroll to top / bottom\n\
-  Alt+Up / Alt+Down        Scroll 5 rows\n\
   F12                      Toggle debug log\n\
   Esc                      Interrupt AI / dismiss input\n\
-  Shift+drag               Native terminal text selection (bypass mouse capture)\n\
+\n\
+Text selection & copy:\n\
+  Default mode (enable_mouse=false in config):\n\
+    Click + drag            Native terminal text selection\n\
+    Ctrl+C / right-click    Copy selected text (terminal native)\n\
+  Mouse mode (enable_mouse=true in config):\n\
+    Mouse wheel             Scrolls message list\n\
+    Ctrl+Y                  Copies last AI message\n\
+    Shift+drag              Native selection (Windows Terminal only)\n\
+\n\
+To switch modes — add to ~/.evocli/config.toml:\n\
+  [tui]\n\
+  enable_mouse = true    # mouse wheel scroll; native selection disabled\n\
+  enable_mouse = false   # native selection/copy; keyboard scroll (default)\n\
 \n\
 Slash commands:";
                 app.messages.push(ChatMessage::System(

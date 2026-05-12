@@ -754,56 +754,54 @@ class EvoCLIAgent:
 
         @agent.tool_plain
         async def shell_ls(path: str = ".", long_format: bool = False) -> str:
-            """List directory contents. path: directory to list. long_format: show size/perms."""
-            cmd = f"ls -la {path}" if long_format else f"ls {path}"
-            return await _sc("shell.run", {"cmd": cmd, "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """List directory contents. path: directory to list. long_format: show size/type."""
+            # Uses Rust std::fs::read_dir — cross-platform, no system shell required.
+            return await _sc("shell.ls", {"path": path, "long": long_format})
 
         @agent.tool_plain
         async def shell_find(path: str = ".", pattern: str = "*", file_type: str = "") -> str:
-            """Find files by name pattern (like find -name). file_type: f=file d=dir."""
-            type_flag = f" -type {file_type}" if file_type else ""
-            cmd = f'find {path} -name "{pattern}"{type_flag}'
-            return await _sc("shell.run", {"cmd": cmd, "cwd": ".", "timeout_s": 15, "dry_run": False})
+            """Find files by name pattern. Uses Rust walkdir — cross-platform."""
+            return await _sc("shell.find", {"name": pattern, "path": path})
 
         @agent.tool_plain
         async def shell_cat(path: str) -> str:
-            """Print file contents with line numbers (prefer fs_read for code files)."""
-            return await _sc("shell.run", {"cmd": f"cat -n {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Read file contents. Uses Rust std::fs — cross-platform. Prefer fs_read for code files."""
+            return await _sc("shell.cat", {"file": path})
 
         @agent.tool_plain
         async def shell_head(path: str, lines: int = 20) -> str:
-            """Read the first N lines of a file."""
-            return await _sc("shell.run", {"cmd": f"head -n {lines} {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Read the first N lines of a file. Uses Rust — cross-platform."""
+            return await _sc("shell.head", {"file": path, "n": lines})
 
         @agent.tool_plain
         async def shell_tail(path: str, lines: int = 20) -> str:
-            """Read the last N lines of a file (useful for logs and recent changes)."""
-            return await _sc("shell.run", {"cmd": f"tail -n {lines} {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Read the last N lines of a file. Uses Rust — cross-platform."""
+            return await _sc("shell.tail", {"file": path, "n": lines})
 
         @agent.tool_plain
         async def shell_wc(path: str) -> str:
-            """Count lines, words, and characters in a file."""
-            return await _sc("shell.run", {"cmd": f"wc {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Count lines, words, and characters in a file. Uses Rust — cross-platform."""
+            return await _sc("shell.wc", {"file": path})
 
         @agent.tool_plain
         async def shell_mkdir(path: str) -> str:
-            """Create a directory (and parents) recursively."""
-            return await _sc("shell.run", {"cmd": f"mkdir -p {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Create a directory (and parents) recursively. Uses Rust std::fs::create_dir_all — cross-platform."""
+            return await _sc("shell.mkdir", {"path": path})
 
         @agent.tool_plain
         async def shell_mv(src: str, dst: str) -> str:
-            """Move or rename a file or directory."""
-            return await _sc("shell.run", {"cmd": f"mv {src} {dst}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Move or rename a file or directory. Uses Rust std::fs::rename — cross-platform."""
+            return await _sc("shell.mv", {"src": src, "dst": dst})
 
         @agent.tool_plain
         async def shell_cp(src: str, dst: str) -> str:
-            """Copy a file or directory (-r applied automatically for directories)."""
-            return await _sc("shell.run", {"cmd": f"cp -r {src} {dst}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Copy a file or directory. Uses Rust std::fs::copy — cross-platform."""
+            return await _sc("shell.cp", {"src": src, "dst": dst})
 
         @agent.tool_plain
         async def shell_touch(path: str) -> str:
-            """Create an empty file or update its timestamp."""
-            return await _sc("shell.run", {"cmd": f"touch {path}", "cwd": ".", "timeout_s": 10, "dry_run": False})
+            """Create an empty file or update its timestamp. Uses Rust std::fs::OpenOptions — cross-platform."""
+            return await _sc("shell.touch", {"file": path})
 
         # ══════════════════════════════════════════════════════════════════════
         # Symbol & code intelligence tools

@@ -334,7 +334,7 @@ async fn run_tui(_debug: bool) -> Result<()> {
         }
     });
 
-    evocli_tui::run(std::sync::Arc::clone(&bridge_arc), &cfg.llm.tiers.fast, resume_session.as_deref(), cfg.context.max_total, cfg.agent.first_chunk_timeout_s).await?;
+    evocli_tui::run(std::sync::Arc::clone(&bridge_arc), &cfg.llm.tiers.fast, resume_session.as_deref(), cfg.context.max_total, cfg.agent.first_chunk_timeout_s, cfg.tui.enable_mouse).await?;
     Ok(())
 }
 
@@ -353,4 +353,5 @@ pub fn find_soul_dir_relative_to_exe() -> Option<std::path::PathBuf> {
     }
     None
 }
+
 
