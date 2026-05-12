@@ -11,7 +11,22 @@ use std::path::PathBuf;
 pub fn fs_read(args: &Value) -> Result<Value> {
     let path = get_path(args, "path")?;
     let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("fs.read: cannot read {}", path.display()))?;
+        .with_context(|| {
+            let cwd = std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "(unknown)".into());
+            // Relative path hint: if path is relative and file doesn't exist,
+            // tell the user what CWD evocli is using so they can diagnose the issue.
+            if path.is_relative() {
+                format!(
+                    "fs.read: cannot read '{}' (relative path, CWD='{}'). \
+                     Tip: run evocli from your project root so relative paths resolve correctly.",
+                    path.display(), cwd
+                )
+            } else {
+                format!("fs.read: cannot read '{}'", path.display())
+            }
+        })?;
     Ok(Value::String(content))
 }
 

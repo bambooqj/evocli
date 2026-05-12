@@ -43,19 +43,24 @@ pub struct CommandOutput {
 /// Commands whose first token must match one of these prefixes.
 const ALLOWED_PREFIXES: &[&str] = &[
     // Build tools
-    "cargo", "rustc", "rustup",
-    "npm", "npx", "node", "bun", "deno",
+    "cargo", "rustc", "rustup", "rust-analyzer",
+    "npm", "npx", "node", "pnpm", "yarn", "bun", "deno",
     "python", "python3", "pip", "uv",
-    "go",
+    "go", "gofmt", "gopls",
     "make", "cmake", "ninja",
     "mvn", "gradle", "java", "javac",
     "dotnet",
     // Version control
     "git",
+    // Shell navigation & directory operations
+    // Note: `cd` in shell.run only changes directory within THAT subprocess.
+    // It does NOT affect subsequent shell.run calls (each runs in fresh subprocess).
+    // Allowing it enables common patterns like: cd src && cargo build
+    "cd",
     // Shell read-only / navigation (safe: no destructive side effects)
     "cat", "ls", "dir", "echo",
     "head", "tail", "wc", "grep", "find", "fd", "rg",
-    "pwd",           // print working directory (was accidentally blocked)
+    "pwd",           // print working directory
     "which", "type", // find executable location
     "env", "printenv",// environment inspection
     "stat", "file",  // file metadata (read-only)

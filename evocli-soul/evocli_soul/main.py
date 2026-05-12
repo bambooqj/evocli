@@ -12,17 +12,51 @@ import logging
 import sys
 import threading
 
-# ── CRITICAL: Ensure THIS package directory is first in sys.path ──────────────
-# Without this, a stale evocli_soul installed in venv site-packages (from a
-# previous 'pip install evocli-soul') can shadow the current dist files.
-# Adding the parent of evocli_soul/ (i.e. evocli-soul/) as the FIRST path entry
-# guarantees that 'import evocli_soul.llm_client' always resolves to the current
-# dist files, not a cached/stale installation.
+# ── CRITICAL: Fix evocli_soul package path BEFORE any submodule imports ───────
+#
+# Problem (Windows-specific): `python -m evocli_soul.main` causes Python to
+# initialize the `evocli_soul` package BEFORE main.py code runs. If a stale
+# editable install in ~/.evocli/venv/site-packages has evocli_soul registered
+# (pointing to an old location without llm_client.py etc.), then:
+#   sys.modules['evocli_soul'].__path__ → old/wrong location
+#   sys.modules['evocli_soul.llm_client'] → ModuleNotFoundError
+#
+# Also: pathlib.resolve() on Windows adds \\?\ prefix which doesn't match
+# the raw path in sys.path, so 'if path not in sys.path' always inserts BUT
+# the \\?\ version may not be on the __path__ correctly.
+#
+# Fix: After startup, FORCE evocli_soul.__path__ to point to the exact
+# directory containing THIS file (the dist's evocli_soul/). This overrides
+# any stale editable install pointer cached in sys.modules.
 import pathlib as _pathlib
-_soul_dir = str(_pathlib.Path(__file__).parent.parent.resolve())
-if _soul_dir not in sys.path:
-    sys.path.insert(0, _soul_dir)
-del _pathlib, _soul_dir
+
+# The directory containing this file IS evocli_soul/
+_this_pkg_dir = _pathlib.Path(__file__).parent
+# Use str() directly (no resolve() to avoid \\?\ prefix on Windows)
+_this_pkg_str = str(_this_pkg_dir)
+# Parent is the evocli-soul/ directory that should be on sys.path
+_soul_dir_str = str(_this_pkg_dir.parent)
+
+# 1. Ensure the soul root is first in sys.path (both \\?\ and normal form)
+for _p in [_soul_dir_str, _soul_dir_str.lstrip('\\\\?\\')]:
+    if _p and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# 2. Force-update the evocli_soul package's __path__ to point HERE.
+#    This fixes the case where sys.modules['evocli_soul'] was already set
+#    by the venv's editable install pointing to a stale location.
+if 'evocli_soul' in sys.modules:
+    _pkg = sys.modules['evocli_soul']
+    if hasattr(_pkg, '__path__'):
+        _pkg.__path__ = [_this_pkg_str]
+    if hasattr(_pkg, '__file__') and _pkg.__file__:
+        _pkg.__file__ = str(_this_pkg_dir / '__init__.py')
+    del _pkg
+
+del _pathlib, _this_pkg_dir, _this_pkg_str, _soul_dir_str
+# Clean up loop variable if it exists
+try: del _p
+except NameError: pass
 
 # Windows GBK 修复：强制 stdout/stderr/stdin UTF-8（subprocess pipe 需要显式包装）
 if sys.platform == "win32":
