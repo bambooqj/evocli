@@ -587,12 +587,24 @@ async def _distill_session() -> None:
     Drains accumulated session events and passes them to MemoryDistiller,
     which extracts success/failure chains and writes them to LanceDB memory.
     This is the core "越用越智能" flywheel trigger.
+    
+    Also updates ToolRouter score store from the same events,
+    so frequently-successful tools get priority in future selections.
     """
     try:
         import evocli_soul.state as _st
         events = _st.drain_session_events()
         if len(events) < 2:
             return  # Not enough signal to extract meaningful patterns
+
+        # ── ToolRouter: 更新工具使用分数（记忆驱动优化）────────────────────
+        # 论文来源：MemoryDistill + ToolLLM 工具历史学习
+        try:
+            from evocli_soul.tool_router import update_scores_from_session_events
+            update_scores_from_session_events(events)
+            log.debug("ToolRouter: scores updated from %d session events", len(events))
+        except Exception as _tr_err:
+            log.debug("ToolRouter score update failed (non-fatal): %s", _tr_err)
 
         from evocli_soul.memory_distill import MemoryDistiller
         bridge = _st.get_bridge()

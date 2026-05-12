@@ -88,6 +88,9 @@ class EvoCLIAgent:
         self._session_id = session_id   # for context cache + file dedup keying
         self._agent    = None
         self._fallback_reason: str | None = None   # set when pydantic-ai init fails
+        # ── ToolRouter 状态（per-request）────────────────────────────────
+        self._selected_tool_names: frozenset[str] = frozenset()  # 本次选中的工具集
+        self._current_query: str = ""  # 用于 prepare hook 读取
         self._init_agent()
     
     def _init_agent(self):
@@ -742,6 +745,55 @@ class EvoCLIAgent:
                 "edits_json":  edits_json,
                 "skip_failed": skip_failed,
             })
+
+    def _select_tools_for_request(self, user_input: str) -> frozenset[str]:
+        """
+        为本次请求选择工具子集。更新 self._selected_tool_names。
+        
+        来源：
+          - tool_router.select_tools()（3阶段：keyword→tag→embedding）
+          - 记忆加权：ToolScoreStore 自动加权历史成功工具
+          - 降级：tool_router 不可用时返回全部 pydantic-ai 工具名
+        
+        副作用：更新 self._selected_tool_names（prepare hook 读取此值）
+        """
+        try:
+            from evocli_soul.tool_router import get_tool_names_for_llm, auto_classify_unknown
+            from evocli_soul.tool_registry import PYDANTIC_TOOL_NAMES, REGISTRY_BY_NAME
+
+            # 自动分类本 agent 中已注册但未在 REGISTRY 中的工具
+            # （防止开发者忘记添加 ToolSpec 导致工具消失）
+            for tool_name in list(PYDANTIC_TOOL_NAMES):
+                if tool_name not in REGISTRY_BY_NAME:
+                    # 从 @agent.tool_plain 的函数获取 docstring
+                    if self._agent is not None:
+                        try:
+                            func = getattr(self._agent, tool_name, None)
+                            doc  = (func.__doc__ or "") if func else ""
+                        except Exception:
+                            doc = ""
+                    else:
+                        doc = ""
+                    auto_classify_unknown(tool_name, doc)
+
+            names = get_tool_names_for_llm(
+                user_input,
+                pydantic_only=True,
+                config=self.config,
+            )
+            self._selected_tool_names = names
+            log.info("ToolRouter: %d tools selected for '%s...'",
+                     len(names), user_input[:50])
+            return names
+        except Exception as e:
+            log.debug("ToolRouter unavailable, using all tools (non-fatal): %s", e)
+            # 降级：全部 pydantic-ai 工具
+            try:
+                from evocli_soul.tool_registry import PYDANTIC_TOOL_NAMES
+                self._selected_tool_names = PYDANTIC_TOOL_NAMES
+            except Exception:
+                self._selected_tool_names = frozenset()
+            return self._selected_tool_names
 
     _TOOL_TO_RPC = {
         "fs_read":       ("fs.read",       lambda args: {"path": args["path"]}),
@@ -1466,6 +1518,8 @@ class EvoCLIAgent:
     async def run(self, user_input: str, context_params: dict | None = None) -> str:
         """Run agent with context injection."""
         await self._emit_fallback_warning_once()
+        # ── ToolRouter: 选工具（prepare hook 会读取 _selected_tool_names）──────
+        self._select_tools_for_request(user_input)
         # Load session history for multi-turn continuity.
         # It is passed directly to _run_litellm's messages array (prior_history).
         # We do NOT pass it to _build_context to avoid embedding it twice —
@@ -1697,6 +1751,8 @@ class EvoCLIAgent:
                      session_id: str = "default") -> AsyncGenerator[str, None]:
         """Stream agent response with multi-turn history support."""
         await self._emit_fallback_warning_once()
+        # ── ToolRouter: 选工具（prepare hook 会读取 _selected_tool_names）──────
+        self._select_tools_for_request(user_input)
         import asyncio
         # Read timeout from config [agent] section (default 20s)
         _ctx_timeout = float((self.config or {}).get("agent", {}).get("context_build_timeout_s", 20))
@@ -2111,7 +2167,29 @@ class EvoCLIAgent:
             log.debug("_stream_litellm: cost_update failed (non-fatal): %s", _e)
     
     def _build_tool_definitions(self) -> list[dict]:
-        """OpenAI function calling format tool definitions（LLM 可见的工具列表）。"""
+        """OpenAI function calling format tool definitions（LLM 可见的工具列表）。
+        
+        ToolRouter 接入点：
+          - 如果 _selected_tool_names 非空（已通过 select_tools 选择），
+            只返回选中工具的 schema（节省 ~55% token）
+          - 如果 _selected_tool_names 为空（降级/首次调用），返回全部
+          - LiteLLM 路径上限：MAX_TOOLS_LITELLM=20
+        """
+        _all_defs = self._all_tool_definitions()
+        
+        # 路由过滤（来自 _select_tools_for_request）
+        selected = self._selected_tool_names
+        if selected:
+            filtered = [d for d in _all_defs if d.get("function", {}).get("name") in selected]
+            if filtered:
+                log.debug("_build_tool_definitions: %d/%d tools (ToolRouter filtered)",
+                          len(filtered), len(_all_defs))
+                return filtered
+        
+        return _all_defs
+
+    def _all_tool_definitions(self) -> list[dict]:
+        """完整工具 schema 列表（不受路由过滤）。供 _build_tool_definitions 调用。"""
         return [
             # ── Core tools ─────────────────────────────────────────────
             {"type": "function", "function": {"name": "fs_read", "description": "Read file contents. For files >200 lines, prefer fs_read_range to save context.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
