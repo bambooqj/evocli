@@ -78,7 +78,7 @@ async def generate_agents_md(
             f"Top communities: {', '.join(c.get('label', '') for c in communities[:5])}\n\n"
             "Write a technical description for AI agents working on this codebase."
         )
-        overview = await llm_client.complete(overview_prompt, tier="fast", max_tokens=400)
+        overview = await llm_client.complete_for_task("wiki", overview_prompt)
     except Exception as e:
         log.debug("Overview generation failed: %s", e)
         overview = f"Codebase with {stats.get('symbol_count', 0)} symbols across {stats.get('file_count', 0)} files."
@@ -146,7 +146,7 @@ async def generate_skill_per_community(
             f"Include: what this module does, how to navigate it, common patterns, gotchas.\n"
             "Keep it under 200 words. Write for an AI coding assistant."
         )
-        content = await llm_client.complete(prompt, tier="fast", max_tokens=300)
+        content = await llm_client.complete_for_task("wiki", prompt)
         return f"# {label} Module Skill\n\n{content}\n"
     except Exception as e:
         log.debug("Skill generation failed for %s: %s", label, e)

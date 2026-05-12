@@ -802,7 +802,7 @@ async def handle_verify_drift(req_id: str, params: dict, send, state) -> None:
                         'Answer ONLY with valid JSON: {"drift_detected": bool, '
                         '"reason": "one sentence", "confidence": "high"|"medium"|"low"}'
                     )
-                    response = await llm.complete(prompt, tier="fast")
+                    response = await llm.complete_for_task("lint", prompt)
                     m = re.search(r"\{[^{}]+\}", response, re.DOTALL)
                     if m:
                         analysis = _json.loads(m.group())

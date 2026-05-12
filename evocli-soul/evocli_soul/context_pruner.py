@@ -44,7 +44,7 @@ Drop: verbose explanations, repeated info.
 
 OUTPUT:
 {text[:4000]}"""
-        summary = await llm_client.complete(prompt, tier="fast")
+        summary = await llm_client.complete_for_task("summarize", prompt)
         return f"[{role} summary]\n{summary}"
     except Exception as e:
         log.debug("LLM pruning failed: %s", e)

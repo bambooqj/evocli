@@ -118,6 +118,33 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
         await send.stream_chunk(req_id, "ERROR: prompt is required", done=True)
         return
 
+    # ── /help — show available slash commands ─────────────────────────────────
+    _prompt_stripped = prompt.strip()
+    if _prompt_stripped.lower() in ("/help", "/?", "/h"):
+        help_text = """\
+**EvoCLI 可用命令**
+
+| 命令 | 说明 |
+|---|---|
+| `/help` 或 `/?` | 显示此帮助 |
+| `/compress` 或 `/compact` | 压缩会话历史，释放上下文空间 |
+| `/add <文件>` | 将文件固定到每轮上下文中 |
+| `/add list` | 查看已固定的文件 |
+| `/add clear` | 清除所有固定文件 |
+
+**使用技巧**
+- 只读分析操作（搜索、读文件、查符号）会立即执行，无需确认
+- 有风险的修改（3+ 文件、API 变更）会先描述计划，等待你确认
+- 上下文过长时输入 `/compress` 压缩，可显著提升响应质量
+- 使用 `evocli doctor` 诊断配置和连接问题
+- 使用 `evocli skill list` 查看可用的自动化技能
+
+**当前状态**
+输入任意问题开始对话，或直接描述你想做的代码任务。
+"""
+        await send.stream_chunk(req_id, help_text.strip(), done=True)
+        return
+
     # ── /add <file> [<file2> ...] — explicit file context loading ────────────
     # Aider pattern: users declare which files should always be in context.
     # Loaded files persist for the entire session (stored in state per session_id).
@@ -385,8 +412,19 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
                 "删除", "重写", "重构整个", "修改所有", "清空",
                 "delete all", "rewrite all", "refactor entire",
             ]
-            _is_planning = any(p in assistant_reply for p in _PLAN_PHRASES)
+            # Only auto-continue when the user's ORIGINAL INTENT was clearly read-only.
+            # This prevents false triggers on write requests that the model described
+            # but didn't execute (those should wait for user confirmation per Strategy C).
+            _READ_INTENT_PHRASES = [
+                "读", "看", "查", "分析", "搜索", "列出", "找到", "是什么", "在哪",
+                "read", "show", "find", "search", "analyze", "list", "look",
+                "what is", "where is", "how does", "explain", "describe",
+                "检查", "查看", "获取", "展示",
+            ]
+            _is_planning   = any(p in assistant_reply for p in _PLAN_PHRASES)
             _is_destructive = any(d in assistant_reply for d in _SAFE_ONLY_CHECK)
+            # Gate on read-only user intent to prevent false auto-continue on write requests
+            _is_read_intent = any(p in prompt.lower() for p in _READ_INTENT_PHRASES)
 
             # Check if any tools were actually called this turn
             events = _st.drain_session_events()
@@ -396,7 +434,7 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             for ev in events:
                 _st.append_session_event(ev)
 
-            if _is_planning and not _tools_called and not _is_destructive:
+            if _is_planning and not _tools_called and not _is_destructive and _is_read_intent:
                 log.info("auto-continue: detected plan-without-execution, injecting follow-up")
                 # Emit hint to TUI
                 await emit_event("soul_status", {

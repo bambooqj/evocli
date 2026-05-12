@@ -160,8 +160,14 @@ pub const STREAM_REDRAW_EVERY: u8 = 3;
 
 /// 所有支持的 / 命令
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help",           "Show available commands and tips"),
+    ("/?",              "Show available commands and tips (alias)"),
+    ("/compress",       "Compress session history to free context space"),
+    ("/compact",        "Compress session history to free context space (alias)"),
+    ("/add <file>",     "Pin a file to context for all turns"),
+    ("/add list",       "Show all pinned files"),
+    ("/add clear",      "Remove all pinned files from context"),
     ("/chain <symbol>", "Show call chain for a code symbol"),
-    ("/help",           "Show all available commands"),
     ("/skills",         "List available skills"),
     ("/skill <name>",   "Run a skill by name"),
     ("/cost",           "Show session cost and token usage"),

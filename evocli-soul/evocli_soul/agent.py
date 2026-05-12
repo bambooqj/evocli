@@ -87,6 +87,7 @@ class EvoCLIAgent:
         self.role_instructions = role_instructions
         self._session_id = session_id   # for context cache + file dedup keying
         self._agent    = None
+        self._fallback_reason: str | None = None   # set when pydantic-ai init fails
         self._init_agent()
     
     def _init_agent(self):
@@ -149,19 +150,25 @@ class EvoCLIAgent:
             # 其余 50+ 工具保留在 _run_litellm fallback（tool_call loop）中。
             self._register_pydantic_tools(self._agent)
 
-            log.info("Pydantic AI Agent initialized: model=%s provider=%s tools=17", fast_model, provider)
+            # 动态计算已注册工具数量（不再硬编码）
+            _n_tools = len(getattr(self._agent, '_function_tools', {})) or "?"
+            log.info("Pydantic AI Agent initialized: model=%s provider=%s tools=%s",
+                     fast_model, provider, _n_tools)
 
         except _ApiKeyMissingError as e:
             log.warning("API key not configured for %s. Using LiteLLM fallback. "
                         "Fix: run `evocli init` or set %s env var.", e.provider, e.env_var)
             self._agent = None
+            self._fallback_reason = f"API key missing for {e.provider} — run `evocli init` or set {e.env_var}"
         except ImportError as e:
             log.warning("pydantic_ai import error (%s) — using LiteLLM fallback", e)
             self._agent = None
+            self._fallback_reason = f"pydantic_ai not installed: {e}"
         except Exception as e:
             log.warning("Pydantic AI init failed (%s) — using LiteLLM fallback. "
                         "Run `evocli doctor` for diagnostics.", e)
             self._agent = None
+            self._fallback_reason = f"Pydantic AI init failed: {e}"
 
     def _create_pydantic_model(self, provider: str, model_name: str, base_url: str | None, api_key: str | None):
         """
@@ -972,6 +979,49 @@ class EvoCLIAgent:
                 pass
             return _json.dumps(result, ensure_ascii=False)
 
+        # ── fs_read_symbol: Python-composite tool (symbol lookup + range read) ──
+        # NOT in _TOOL_TO_RPC because it's not a single Rust RPC — it chains
+        # symbol.lookup then fs.read_range. Handled here like fs_apply_search_replace.
+        if name == "fs_read_symbol":
+            symbol_name   = args.get("symbol_name", "")
+            path_hint     = args.get("path", "")
+            context_lines = int(args.get("context_lines", 10))
+            await emit_event("tool_call_start", {"tool": "fs.read_symbol", "display": f"🔍 {symbol_name}"})
+            try:
+                search_params = {"name": symbol_name}
+                if path_hint:
+                    search_params["file"] = path_hint
+                symbols = await self.bridge.call("symbol.lookup", search_params)
+                if not isinstance(symbols, list) or not symbols:
+                    grep_result = await self.bridge.call("shell.grep", {
+                        "pattern": rf"\b{symbol_name}\b", "path": path_hint or ".",
+                    })
+                    result = {"symbol": symbol_name, "found": False,
+                              "fallback": str(grep_result)[:1000],
+                              "note": "Symbol not in index — run 'evocli index' for better results."}
+                else:
+                    sym = symbols[0]
+                    sym_file = sym.get("file", path_hint)
+                    sym_line = int(sym.get("line", 0))
+                    if sym_file and sym_line > 0:
+                        start = max(1, sym_line - context_lines)
+                        end   = sym_line + 80 + context_lines
+                        range_result = await self.bridge.call("fs.read_range", {
+                            "path": sym_file, "start_line": start, "end_line": end,
+                        })
+                        if isinstance(range_result, dict):
+                            range_result["symbol"] = symbol_name
+                            range_result["symbol_line"] = sym_line
+                            range_result["symbol_kind"] = sym.get("kind", "unknown")
+                        result = range_result if isinstance(range_result, dict) else {"content": str(range_result)}
+                    else:
+                        result = {"symbol": symbol_name, "found": True, "error": "No file/line info", "raw": sym}
+                await emit_event("tool_call_done", {"tool": "fs.read_symbol", "ok": True})
+                return _json.dumps(result, ensure_ascii=False)
+            except Exception as e:
+                await emit_event("tool_call_done", {"tool": "fs.read_symbol", "ok": False})
+                return _json.dumps({"symbol": symbol_name, "error": str(e)}, ensure_ascii=False)
+
         if name == "fs_lint_file":
             from pathlib import Path as _Path
             ext = _Path(args.get("path", "")).suffix.lower()
@@ -1375,6 +1425,7 @@ class EvoCLIAgent:
     
     async def run(self, user_input: str, context_params: dict | None = None) -> str:
         """Run agent with context injection."""
+        await self._emit_fallback_warning_once()
         ctx          = await self._build_context(user_input, context_params)
         full_input   = await self._inject_context(user_input, ctx)
         
@@ -1531,10 +1582,24 @@ class EvoCLIAgent:
             "rolled_back":     failed and checkpoint_ref is not None,
         }
     
+    async def _emit_fallback_warning_once(self) -> None:
+        """Emit a TUI warning if pydantic-ai failed to initialize (once per agent instance)."""
+        if self._fallback_reason:
+            try:
+                from evocli_soul.rpc import emit_event
+                await emit_event("soul_status", {
+                    "status":  "ready",
+                    "message": f"⚠️ Using LiteLLM fallback (tool calling may be limited): {self._fallback_reason}",
+                })
+            except Exception:
+                pass
+            self._fallback_reason = None  # emit only once
+
     async def stream(self, user_input: str, context_params: dict | None = None,
                      prior_history: list[dict] | None = None,
                      session_id: str = "default") -> AsyncGenerator[str, None]:
         """Stream agent response with multi-turn history support."""
+        await self._emit_fallback_warning_once()
         import asyncio
         # Read timeout from config [agent] section (default 20s)
         _ctx_timeout = float((self.config or {}).get("agent", {}).get("context_build_timeout_s", 20))
