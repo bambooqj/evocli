@@ -144,6 +144,66 @@ pub fn git_diff(repo: &Path) -> Result<String> {
     Ok(result)
 }
 
+/// Extended diff with parameter control.
+///
+/// Parameters:
+///   path:   specific file path to diff (empty = whole tree)
+///   staged: true = only staged changes; false = only unstaged; None = both
+///   stat:   true = summary stats (files changed, insertions, deletions)
+///   base:   compare HEAD against a branch/commit, e.g. "main", "origin/main", "abc123"
+pub fn git_diff_ext(
+    repo: &Path,
+    path: &str,
+    staged: Option<bool>,   // Some(true)=staged, Some(false)=unstaged, None=both
+    stat: bool,
+    base: &str,
+) -> Result<String> {
+    let mut args_base: Vec<&str> = vec!["diff"];
+
+    // stat mode: show summary instead of full diff
+    if stat { args_base.push("--stat"); }
+
+    // base: compare against a reference (branch/commit)
+    // e.g. "git diff main...HEAD" or "git diff abc123"
+    if !base.is_empty() { args_base.push(base); }
+
+    // staged/unstaged
+    let do_staged   = staged.unwrap_or(true);
+    let do_unstaged = staged.map_or(true, |s| !s);
+
+    let path_args: Vec<&str> = if path.is_empty() {
+        vec![]
+    } else {
+        vec!["--", path]
+    };
+
+    let mut result = String::new();
+
+    if do_staged {
+        let mut a = args_base.clone();
+        a.push("--cached");
+        a.extend(path_args.iter());
+        let out = run_git(repo, &a)?;
+        if !out.is_empty() {
+            if staged.is_none() { result.push_str("=== STAGED ===\n"); }
+            result.push_str(&out);
+            result.push('\n');
+        }
+    }
+
+    if do_unstaged && base.is_empty() {
+        let mut a = args_base.clone();
+        a.extend(path_args.iter());
+        let out = run_git(repo, &a)?;
+        if !out.is_empty() {
+            if staged.is_none() { result.push_str("=== UNSTAGED ===\n"); }
+            result.push_str(&out);
+        }
+    }
+
+    Ok(result)
+}
+
 // ── Side-Git：影子 Git 仓库（Section 27）────────────────────────────────
 //
 // Creates `.evocli/shadow-git/` — a bare git repo whose work-tree is the

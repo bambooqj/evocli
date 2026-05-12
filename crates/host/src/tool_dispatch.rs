@@ -89,7 +89,16 @@ pub async fn dispatch(
             Ok(serde_json::to_value(entries)?)
         }
         "git.diff" => {
-            let diff = git::git_diff(&cwd)?;
+            let path   = args["path"].as_str().unwrap_or("");
+            let stat   = args["stat"].as_bool().unwrap_or(false);
+            let base   = args["base"].as_str().unwrap_or("");
+            // staged: true=staged only, false=unstaged only, absent=both
+            let staged = if args["staged"].is_null() {
+                None
+            } else {
+                args["staged"].as_bool()
+            };
+            let diff = git::git_diff_ext(&cwd, path, staged, stat, base)?;
             Ok(Value::String(diff))
         }
         "git.commit" => {
@@ -745,40 +754,159 @@ pub async fn dispatch(
 
         // ── Shell built-ins (Section 22) ─────────────────────────────────
         "shell.grep" => {
-            let pattern = args["pattern"].as_str().unwrap_or("");
-            let path = args["path"]
-                .as_str()
-                .map(PathBuf::from)
-                .unwrap_or(cwd.clone());
-            let results = search_code(pattern, &path)?;
-            let count = results.len();
-            let matches: Vec<_> = results
-                .iter()
-                .take(100)
-                .map(|m| serde_json::json!({"file": m.file, "line": m.line, "content": m.content}))
-                .collect();
-            Ok(serde_json::json!({"pattern": pattern, "matches": matches, "count": count}))
-        }
-        "shell.find" => {
-            let name_pat = args["name"].as_str().unwrap_or("");
-            let path = args["path"]
-                .as_str()
-                .map(PathBuf::from)
-                .unwrap_or(cwd.clone());
-            let mut found: Vec<String> = vec![];
-            if path.exists() {
-                for entry in walkdir::WalkDir::new(&path).into_iter().flatten() {
-                    let fname = entry.file_name().to_string_lossy().to_string();
-                    if name_pat.is_empty() || fname.contains(name_pat) {
-                        found.push(entry.path().display().to_string());
+            let pattern      = args["pattern"].as_str().unwrap_or("");
+            let path         = args["path"].as_str().map(PathBuf::from).unwrap_or(cwd.clone());
+            let case_sensitive = args["case_sensitive"].as_bool().unwrap_or(false);
+            let context_lines  = args["context_lines"].as_u64().unwrap_or(0) as usize;
+            let max_results    = args["max_results"].as_u64().unwrap_or(100) as usize;
+            // include: file extension or glob-like suffix, e.g. ".rs" ".py" or "*.toml"
+            let include_ext  = args["include"].as_str().unwrap_or("");
+            // exclude: path substring to skip, e.g. "target" "node_modules"
+            let exclude_sub  = args["exclude"].as_str().unwrap_or("");
+
+            let pat_lower = if case_sensitive { pattern.to_string() } else { pattern.to_lowercase() };
+
+            let mut matches: Vec<serde_json::Value> = vec![];
+            let mut total_count = 0usize;
+
+            'outer: for entry in walkdir::WalkDir::new(&path)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                let p = entry.path();
+                let p_str = p.to_str().unwrap_or("");
+
+                // Skip common noise dirs
+                if p_str.contains("/target/") || p_str.contains("\\target\\")
+                    || p_str.contains("node_modules") || p_str.contains(".git/")
+                    || p_str.contains("\\.git\\")
+                { continue; }
+
+                // User-specified exclude
+                if !exclude_sub.is_empty() && p_str.contains(exclude_sub) { continue; }
+
+                // User-specified include (extension filter)
+                if !include_ext.is_empty() {
+                    let ext_filter = include_ext.trim_start_matches('*').trim_start_matches('.');
+                    let file_ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !file_ext.eq_ignore_ascii_case(ext_filter) && !file_name.contains(include_ext) {
+                        continue;
+                    }
+                }
+
+                let Ok(content) = std::fs::read_to_string(p) else { continue };
+                let lines: Vec<&str> = content.lines().collect();
+
+                for (i, line) in lines.iter().enumerate() {
+                    let hay = if case_sensitive { line.to_string() } else { line.to_lowercase() };
+                    if hay.contains(&pat_lower) {
+                        total_count += 1;
+                        if matches.len() < max_results {
+                            let mut m = serde_json::json!({
+                                "file":    p.to_string_lossy(),
+                                "line":    i + 1,
+                                "content": line,
+                            });
+                            // Context lines: before + after
+                            if context_lines > 0 {
+                                let before_start = i.saturating_sub(context_lines);
+                                let after_end    = (i + context_lines + 1).min(lines.len());
+                                let before: Vec<&str> = lines[before_start..i].to_vec();
+                                let after:  Vec<&str> = lines[(i + 1)..after_end].to_vec();
+                                m["before"] = serde_json::json!(before);
+                                m["after"]  = serde_json::json!(after);
+                            }
+                            matches.push(m);
+                        }
+                        if total_count >= max_results * 10 { break 'outer; } // safety cap
                     }
                 }
             }
+
+            Ok(serde_json::json!({
+                "pattern":     pattern,
+                "matches":     matches,
+                "count":       matches.len(),
+                "total_found": total_count,
+                "truncated":   total_count > max_results,
+            }))
+        }
+        "shell.find" => {
+            let name_pat    = args["name"].as_str().unwrap_or("");
+            let path        = args["path"].as_str().map(PathBuf::from).unwrap_or(cwd.clone());
+            // extension: filter by file extension, e.g. "rs" or ".rs" or "*.rs"
+            let ext_filter  = args["extension"].as_str().unwrap_or("").trim_start_matches('*').trim_start_matches('.');
+            // type: "file" | "dir" | "" (both, default)
+            let type_filter = args["type"].as_str().unwrap_or("");
+            // depth: max recursion depth (0 = unlimited)
+            let max_depth   = args["depth"].as_u64().unwrap_or(0) as usize;
+            // case_sensitive: default false
+            let case_sensitive = args["case_sensitive"].as_bool().unwrap_or(false);
+            // max_results: default 200
+            let max_results = args["max_results"].as_u64().unwrap_or(200) as usize;
+            // exclude: path substring to skip
+            let exclude_sub = args["exclude"].as_str().unwrap_or("");
+
+            let name_lower = if case_sensitive { name_pat.to_string() } else { name_pat.to_lowercase() };
+
+            let walker = if max_depth > 0 {
+                walkdir::WalkDir::new(&path).max_depth(max_depth)
+            } else {
+                walkdir::WalkDir::new(&path)
+            };
+
+            let mut found: Vec<String> = vec![];
+
+            for entry in walker.into_iter().flatten() {
+                if found.len() >= max_results { break; }
+
+                let p     = entry.path();
+                let p_str = p.to_str().unwrap_or("");
+
+                // Skip noise
+                if p_str.contains("/target/") || p_str.contains("\\target\\")
+                    || p_str.contains("node_modules") || p_str.contains("\\.git\\")
+                    || p_str.contains("/.git/")
+                { continue; }
+
+                if !exclude_sub.is_empty() && p_str.contains(exclude_sub) { continue; }
+
+                let is_dir  = entry.file_type().is_dir();
+                let is_file = entry.file_type().is_file();
+
+                // Type filter
+                match type_filter {
+                    "file" if !is_file => continue,
+                    "dir"  if !is_dir  => continue,
+                    _                  => {}
+                }
+
+                // Extension filter (files only)
+                if !ext_filter.is_empty() && is_file {
+                    let file_ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if !file_ext.eq_ignore_ascii_case(ext_filter) { continue; }
+                }
+
+                // Name filter
+                if !name_pat.is_empty() {
+                    let fname = entry.file_name().to_string_lossy().to_string();
+                    let hay   = if case_sensitive { fname.clone() } else { fname.to_lowercase() };
+                    if !hay.contains(&name_lower) { continue; }
+                }
+
+                found.push(p.display().to_string());
+            }
+
             let count = found.len();
-            let files: Vec<_> = found.iter().take(200).collect();
-            Ok(
-                serde_json::json!({"path": path.display().to_string(), "name": name_pat, "files": files, "count": count}),
-            )
+            Ok(serde_json::json!({
+                "path":    path.display().to_string(),
+                "name":    name_pat,
+                "files":   found,
+                "count":   count,
+            }))
         }
         "shell.ls" => {
             let path = args["path"]

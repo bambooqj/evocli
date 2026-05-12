@@ -271,9 +271,40 @@ class EvoCLIAgent:
             return await _sc("shell.run", {"cmd": cmd, "cwd": cwd, "timeout_s": timeout_s, "dry_run": False})
 
         @agent.tool_plain
-        async def shell_grep(pattern: str, path: str = ".") -> str:
-            """Search for a regex pattern in files (like grep -rn)."""
-            return await _sc("shell.grep", {"pattern": pattern, "path": path})
+        async def shell_grep(
+            pattern: str,
+            path: str = ".",
+            include: str = "",
+            exclude: str = "",
+            case_sensitive: bool = False,
+            context_lines: int = 0,
+            max_results: int = 100,
+        ) -> str:
+            """Search for a pattern in files. Pure Rust — cross-platform, no grep binary needed.
+
+            pattern:        text to search for (substring match)
+            path:           directory to search in (default: current dir)
+            include:        filter by file extension, e.g. ".rs" "*.py" ".toml"
+            exclude:        skip paths containing this string, e.g. "target" "dist"
+            case_sensitive: case-sensitive search (default: false)
+            context_lines:  N lines of context before/after each match (default: 0)
+            max_results:    maximum matches to return (default: 100)
+
+            Examples:
+              shell_grep("fn main")                         — find 'fn main' in all code files
+              shell_grep("TODO", include=".rs")             — find TODOs in Rust files only
+              shell_grep("import", include=".py", context_lines=2)
+              shell_grep("ERROR", path="logs/", max_results=50)
+            """
+            return await _sc("shell.grep", {
+                "pattern":        pattern,
+                "path":           path,
+                "include":        include,
+                "exclude":        exclude,
+                "case_sensitive": case_sensitive,
+                "context_lines":  context_lines,
+                "max_results":    max_results,
+            })
 
         @agent.tool_plain
         async def search_code(query: str, path: str = ".") -> str:
@@ -332,9 +363,33 @@ class EvoCLIAgent:
             return await _sc("git.status", {})
 
         @agent.tool_plain
-        async def git_diff() -> str:
-            """Get the current staged and unstaged git diff."""
-            return await _sc("git.diff", {})
+        async def git_diff(
+            path: str = "",
+            staged: bool | None = None,
+            stat: bool = False,
+            base: str = "",
+        ) -> str:
+            """Show git diff with flexible options.
+
+            path:   specific file path to diff (empty = whole working tree)
+            staged: True = only staged changes; False = only unstaged; None = both (default)
+            stat:   True = show summary (files changed, insertions, deletions) instead of full diff
+            base:   compare against a branch or commit, e.g. "main", "origin/main", "abc123"
+
+            Examples:
+              git_diff()                           — both staged and unstaged (default)
+              git_diff(staged=True)               — only staged changes
+              git_diff(path="src/main.rs")        — diff specific file
+              git_diff(stat=True)                 — show summary: N files changed, +X -Y
+              git_diff(base="main")               — compare current branch vs main
+              git_diff(path="src/", staged=False) — unstaged changes in src/ directory
+            """
+            params: dict = {}
+            if path:   params["path"]   = path
+            if stat:   params["stat"]   = True
+            if base:   params["base"]   = base
+            if staged is not None: params["staged"] = staged
+            return await _sc("git.diff", params)
 
         @agent.tool_plain
         async def git_commit(message: str) -> str:
@@ -782,9 +837,43 @@ class EvoCLIAgent:
             })
 
         @agent.tool_plain
-        async def shell_find(path: str = ".", pattern: str = "*", file_type: str = "") -> str:
-            """Find files by name pattern. Uses Rust walkdir — cross-platform."""
-            return await _sc("shell.find", {"name": pattern, "path": path})
+        async def shell_find(
+            path: str = ".",
+            pattern: str = "",
+            extension: str = "",
+            type: str = "",
+            depth: int = 0,
+            exclude: str = "",
+            case_sensitive: bool = False,
+            max_results: int = 200,
+        ) -> str:
+            """Find files and directories. Pure Rust walkdir — cross-platform.
+
+            path:           directory to search in (default: current dir)
+            pattern:        filename substring to match (empty = all)
+            extension:      filter by extension, e.g. "rs" ".py" "*.toml"
+            type:           "file" | "dir" | "" (both, default)
+            depth:          max recursion depth (0 = unlimited, default)
+            exclude:        skip paths containing this substring, e.g. "target"
+            case_sensitive: case-sensitive name matching (default: false)
+            max_results:    maximum results to return (default: 200)
+
+            Examples:
+              shell_find(extension="rs")               — all Rust files recursively
+              shell_find(pattern="config", type="file")— files with 'config' in name
+              shell_find(type="dir", depth=2)          — subdirectories up to 2 levels
+              shell_find(extension="py", exclude="test")— Python files not in test dirs
+            """
+            return await _sc("shell.find", {
+                "path":           path,
+                "name":           pattern,
+                "extension":      extension,
+                "type":           type,
+                "depth":          depth,
+                "exclude":        exclude,
+                "case_sensitive": case_sensitive,
+                "max_results":    max_results,
+            })
 
         @agent.tool_plain
         async def shell_cat(path: str) -> str:
