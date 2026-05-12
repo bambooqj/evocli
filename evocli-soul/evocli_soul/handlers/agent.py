@@ -100,10 +100,26 @@ async def handle_agent_run(req_id: str, params: dict, send, state) -> None:
                 log.debug("LangGraph agent.run failed (%s), using fallback", wf_err)
         # fallback: 普通 EvoCLIAgent（Fix M2: 每请求独立实例）
         # Load actual config so pydantic-ai uses the correct provider/model/api_key.
+        # Pass session_id so agent.run reads history from the right session bucket.
         from evocli_soul.agent import EvoCLIAgent
+        import os as _os_run, hashlib as _hashlib_run
+        _run_explicit_sid = params.get("session_id")
+        if _run_explicit_sid:
+            _run_session_id = _run_explicit_sid
+        else:
+            _run_session_id = "cwd_" + _hashlib_run.md5(
+                _os_run.getcwd().encode(), usedforsecurity=False
+            ).hexdigest()[:12]
         cfg    = state.get_config()
-        agent  = EvoCLIAgent(state.get_bridge(), state.get_memory(), cfg)
+        agent  = EvoCLIAgent(state.get_bridge(), state.get_memory(), cfg, session_id=_run_session_id)
         result = await agent.run(prompt)
+        # Persist this turn so subsequent calls have multi-turn context.
+        if result:
+            import evocli_soul.state as _st_run_persist
+            _st_run_persist.append_history([
+                {"role": "user",      "content": prompt},
+                {"role": "assistant", "content": str(result)},
+            ], _run_session_id)
         await send.response(req_id, {"text": str(result)})
     except Exception as e:
         log.exception("agent.run failed")

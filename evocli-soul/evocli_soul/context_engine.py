@@ -610,6 +610,8 @@ class ContextEngine:
         if history and remaining > 0:
             budget         = min(BUDGET_HISTORY, remaining)
             history_tokens = sum(_count_tokens(str(m.get("content", ""))) for m in history)
+            # Track tokens already in history_text (anchor injected above) to avoid double-counting.
+            _already_counted = _count_tokens(history_text) if history_text else 0
 
             if history_tokens > budget * 2 and len(history) > 10:
                 # 历史太长 — 使用 Anchored Summary 压缩 (OpenCode 模式)
@@ -642,7 +644,8 @@ class ContextEngine:
                     extra = "\n".join(lines)
                     history_text = (history_text + "\n\n" + extra).strip() if history_text else extra
 
-            used = _count_tokens(history_text)
+            # Only count the NEW tokens added in this block (not the anchor already counted above).
+            used = max(0, _count_tokens(history_text) - _already_counted)
             remaining -= used
             slots.append({"name": "history", "tokens": used, "priority": "history"})
 

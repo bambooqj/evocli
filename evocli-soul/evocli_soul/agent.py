@@ -1432,6 +1432,7 @@ class EvoCLIAgent:
                 "active_tools":     list(self._TOOL_TO_RPC.keys()),
                 "session_id":       session_id,
                 "anchored_summary": anchored_summary,  # injected after /compress
+                "read_only":        self.read_only,    # passed through so context_engine uses correct prompt mode
             })
         except Exception as e:
             log.debug("Context build failed: %s", e)
@@ -1477,11 +1478,32 @@ class EvoCLIAgent:
         if self._agent is not None:
             try:
                 result = await self._agent.run(full_input)
-                return str(getattr(result, "output", None) or getattr(result, "data", "") or "")
+                reply = str(getattr(result, "output", None) or getattr(result, "data", "") or "")
+                if reply:
+                    try:
+                        import evocli_soul.state as _st_persist
+                        _st_persist.append_history([
+                            {"role": "user",      "content": user_input},
+                            {"role": "assistant", "content": reply},
+                        ], self._session_id)
+                    except Exception:
+                        pass
+                return reply
             except Exception as e:
                 log.warning("Pydantic AI run failed (%s), falling back", e)
 
-        return await self._run_litellm(full_input, ctx)
+        # LiteLLM fallback: pass history so tool loop has multi-turn context.
+        litellm_reply = await self._run_litellm(full_input, ctx, prior_history=_run_history)
+        if litellm_reply:
+            try:
+                import evocli_soul.state as _st_persist2
+                _st_persist2.append_history([
+                    {"role": "user",      "content": user_input},
+                    {"role": "assistant", "content": litellm_reply},
+                ], self._session_id)
+            except Exception:
+                pass
+        return litellm_reply
 
     async def run_architect_mode(
         self,
