@@ -77,7 +77,10 @@ fn append_entry(entry: &serde_json::Value) -> Result<()> {
     }
     let line = serde_json::to_string(entry)? + "\n";
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
     f.write_all(line.as_bytes())?;
     Ok(())
 }
@@ -118,7 +121,7 @@ pub fn run(action: ConstraintAction) -> Result<()> {
             println!("  Scope: {}", scope);
             println!("  Level: {}", level);
 
-            let id  = uuid::Uuid::new_v4().to_string();
+            let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().to_rfc3339();
             let body = format!("Constraint [{scope}]: {rule}");
             let tags = serde_json::json!(["constraint", level, scope]);
@@ -156,32 +159,43 @@ pub fn run(action: ConstraintAction) -> Result<()> {
                 return Ok(());
             }
             let filtered: Vec<_> = if let Some(ref s) = scope {
-                constraints.iter()
+                constraints
+                    .iter()
                     .filter(|v| v["body"].as_str().map_or(false, |b| b.contains(s.as_str())))
                     .collect()
             } else {
                 constraints.iter().collect()
             };
             if filtered.is_empty() {
-                println!("No constraints found for scope '{}'.", scope.unwrap_or_default());
+                println!(
+                    "No constraints found for scope '{}'.",
+                    scope.unwrap_or_default()
+                );
                 return Ok(());
             }
             println!("{:<10} {:<12} {}", "ID", "Severity", "Rule");
             println!("{}", "─".repeat(70));
             for v in filtered {
-                let id  = v["id"].as_str().unwrap_or("?");
+                let id = v["id"].as_str().unwrap_or("?");
                 let sev = v["severity"].as_str().unwrap_or("-");
-                let body = v["body"].as_str().unwrap_or(v["title"].as_str().unwrap_or("?"));
+                let body = v["body"]
+                    .as_str()
+                    .unwrap_or(v["title"].as_str().unwrap_or("?"));
                 // Use char-boundary-safe truncation: byte slicing panics on multibyte UTF-8
                 // (e.g., Chinese chars span 3 bytes — &str[..60] panics if byte 60 is mid-char).
                 let body_display: String = body.chars().take(60).collect();
-                println!("{:<10} {:<12} {}", &id[..8.min(id.len())], sev, body_display);
+                println!(
+                    "{:<10} {:<12} {}",
+                    &id[..8.min(id.len())],
+                    sev,
+                    body_display
+                );
             }
         }
 
         ConstraintAction::Remove { rule } => {
             let n = remove_entries(|v| {
-                let id   = v["id"].as_str().unwrap_or("");
+                let id = v["id"].as_str().unwrap_or("");
                 let body = v["body"].as_str().unwrap_or("");
                 let title = v["title"].as_str().unwrap_or("");
                 id.starts_with(&rule) || body.contains(&rule) || title.contains(&rule)

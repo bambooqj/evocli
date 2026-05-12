@@ -1,4 +1,4 @@
-﻿//! embedder.rs - 中英双语嵌入 (intfloat/multilingual-e5-small)
+//! embedder.rs - 中英双语嵌入 (intfloat/multilingual-e5-small)
 //!
 //! Python 侧: jinaai/jina-embeddings-v2-base-zh (768维, 中英专用)
 //! Rust 侧:   intfloat/multilingual-e5-small (384维, 多语言, 轻量)
@@ -17,7 +17,7 @@ pub type Embedding = Vec<f32>;
 
 pub struct TextEmbedder {
     inner: Mutex<fastembed::TextEmbedding>,
-    dim:   usize,
+    dim: usize,
 }
 
 impl TextEmbedder {
@@ -28,7 +28,7 @@ impl TextEmbedder {
         // 适合 MemRouter 分类器训练 (速度优先)
         // 如需更高质量改为 MultilingualE5Large (1024维)
         let model = fastembed::EmbeddingModel::MultilingualE5Small;
-        let dim   = 384usize; // multilingual-e5-small = 384
+        let dim = 384usize; // multilingual-e5-small = 384
 
         let opts = fastembed::InitOptions::new(model)
             .with_cache_dir(cache_dir.to_path_buf())
@@ -37,8 +37,14 @@ impl TextEmbedder {
         let inner = fastembed::TextEmbedding::try_new(opts)
             .map_err(|e| anyhow::anyhow!("fastembed init (multilingual-e5-small): {}", e))?;
 
-        tracing::info!("MemRouter embedder: multilingual-e5-small ({}dim, 中英双语)", dim);
-        Ok(Self { inner: Mutex::new(inner), dim })
+        tracing::info!(
+            "MemRouter embedder: multilingual-e5-small ({}dim, 中英双语)",
+            dim
+        );
+        Ok(Self {
+            inner: Mutex::new(inner),
+            dim,
+        })
     }
 
     /// 使用默认共享缓存 ~/.evocli/models/
@@ -56,19 +62,20 @@ impl TextEmbedder {
         // 对于分类任务，不加前缀或用 "passage: " 均可
         let prefixed = format!("passage: {}", text);
         let mut g = self.inner.lock().map_err(|_| anyhow::anyhow!("mutex"))?;
-        let mut r = g.embed(vec![prefixed], None)
+        let mut r = g
+            .embed(vec![prefixed], None)
             .map_err(|e| anyhow::anyhow!("embed: {}", e))?;
         r.pop().ok_or_else(|| anyhow::anyhow!("empty"))
     }
 
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
-        let prefixed: Vec<String> = texts.iter()
-            .map(|t| format!("passage: {}", t))
-            .collect();
+        let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
         let mut g = self.inner.lock().map_err(|_| anyhow::anyhow!("mutex"))?;
         g.embed(prefixed, None)
             .map_err(|e| anyhow::anyhow!("batch embed: {}", e))
     }
 
-    pub fn dim(&self) -> usize { self.dim }
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
 }

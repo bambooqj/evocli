@@ -8,9 +8,24 @@ pub fn run() -> Result<()> {
     let mut warn = 0u32;
     let mut fail = 0u32;
 
-    macro_rules! ok   { ($msg:expr) => { println!("  ✅ {}", $msg); pass += 1; }; }
-    macro_rules! warn { ($msg:expr) => { println!("  ⚠️  {}", $msg); warn += 1; }; }
-    macro_rules! fail { ($msg:expr) => { println!("  ❌ {}", $msg); fail += 1; }; }
+    macro_rules! ok {
+        ($msg:expr) => {
+            println!("  ✅ {}", $msg);
+            pass += 1;
+        };
+    }
+    macro_rules! warn {
+        ($msg:expr) => {
+            println!("  ⚠️  {}", $msg);
+            warn += 1;
+        };
+    }
+    macro_rules! fail {
+        ($msg:expr) => {
+            println!("  ❌ {}", $msg);
+            fail += 1;
+        };
+    }
 
     let home = dirs::home_dir().unwrap_or_default();
     let evocli = home.join(".evocli");
@@ -31,7 +46,10 @@ pub fn run() -> Result<()> {
     if soul_ok {
         ok!(format!("Soul found: {}", soul));
     } else {
-        fail!(format!("Soul NOT found: {} (run: evocli init or set EVOCLI_SOUL)", soul));
+        fail!(format!(
+            "Soul NOT found: {} (run: evocli init or set EVOCLI_SOUL)",
+            soul
+        ));
     }
 
     // [2] Python 3.10+ 可用（优先检测托管 Python，回退到系统 Python）
@@ -40,7 +58,14 @@ pub fn run() -> Result<()> {
     let (py_cmd_path, py_source) = if managed_py.exists() {
         (managed_py.to_string_lossy().to_string(), "managed")
     } else {
-        (if cfg!(windows) { "python".to_string() } else { "python3".to_string() }, "system")
+        (
+            if cfg!(windows) {
+                "python".to_string()
+            } else {
+                "python3".to_string()
+            },
+            "system",
+        )
     };
     let py_ok = std::process::Command::new(&py_cmd_path)
         .args(["--version"])
@@ -52,7 +77,8 @@ pub fn run() -> Result<()> {
             // Previous check `contains("Python 3.1")` was wrong:
             //   - matched "Python 3.1.5" (too old, <3.10)
             //   - missed "Python 3.13+" (future versions)
-            v.split_whitespace().nth(1)
+            v.split_whitespace()
+                .nth(1)
                 .and_then(|ver_str| {
                     let parts: Vec<&str> = ver_str.split('.').collect();
                     let major: u32 = parts.first()?.parse().ok()?;
@@ -63,7 +89,10 @@ pub fn run() -> Result<()> {
         })
         .unwrap_or(false);
     if py_ok {
-        ok!(format!("Python 3.10+ found ({} at {})", py_source, py_cmd_path));
+        ok!(format!(
+            "Python 3.10+ found ({} at {})",
+            py_source, py_cmd_path
+        ));
     } else {
         warn!("Python 3.10+ not found (run: evocli init)");
     }
@@ -73,8 +102,8 @@ pub fn run() -> Result<()> {
     let soul = crate::config::resolve_soul_path();
     // 从 soul 路径推断 PYTHONPATH（evocli-soul/ 目录）
     let soul_pythonpath: Option<String> = std::path::Path::new(&soul)
-        .parent()   // evocli_soul/
-        .and_then(|p| p.parent())  // evocli-soul/
+        .parent() // evocli_soul/
+        .and_then(|p| p.parent()) // evocli-soul/
         .and_then(|p| std::fs::canonicalize(p).ok())
         .map(|p| p.to_string_lossy().to_string());
 
@@ -102,7 +131,11 @@ pub fn run() -> Result<()> {
     let api_configured = std::env::var("ANTHROPIC_API_KEY").is_ok()
         || std::env::var("OPENAI_API_KEY").is_ok()
         || std::env::var("DEEPSEEK_API_KEY").is_ok();
-    if api_configured { ok!("API Key configured"); } else { warn!("No API Key found (run: evocli init)"); }
+    if api_configured {
+        ok!("API Key configured");
+    } else {
+        warn!("No API Key found (run: evocli init)");
+    }
 
     // [5] 全局目录结构完整
     print!("  [5] Global dir structure ... ");
@@ -116,14 +149,23 @@ pub fn run() -> Result<()> {
         evocli.join("vectors"),
         evocli.join("prompt_templates"),
     ];
-    let missing_global: Vec<_> = required_global.iter()
+    let missing_global: Vec<_> = required_global
+        .iter()
         .filter(|d| !d.exists())
-        .map(|d| d.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .map(|d| {
+            d.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
     if missing_global.is_empty() {
         ok!("~/.evocli/ structure complete");
     } else {
-        warn!(format!("Missing dirs: {} (run: evocli init)", missing_global.join(", ")));
+        warn!(format!(
+            "Missing dirs: {} (run: evocli init)",
+            missing_global.join(", ")
+        ));
     }
 
     // [6] 项目级 .evocli/ 目录
@@ -139,7 +181,7 @@ pub fn run() -> Result<()> {
     print!("  [7] Memory database ... ");
     // H1 migration: Python Soul reads/writes ~/.evocli/data/memories.jsonl (not memory.db)
     let memories_jsonl = evocli.join("data").join("memories.jsonl");
-    let mem_db_legacy  = evocli.join("memory.db");
+    let mem_db_legacy = evocli.join("memory.db");
     if memories_jsonl.exists() {
         let line_count = std::fs::read_to_string(&memories_jsonl)
             .map(|c| c.lines().filter(|l| !l.trim().is_empty()).count())
@@ -154,20 +196,35 @@ pub fn run() -> Result<()> {
     // [8] 代码索引
     print!("  [8] Code index ... ");
     let idx_db = std::path::Path::new(".evocli").join("code_index.db");
-    if idx_db.exists() { ok!("code_index.db found"); } else { warn!("No index (run: evocli index)"); }
+    if idx_db.exists() {
+        ok!("code_index.db found");
+    } else {
+        warn!("No index (run: evocli index)");
+    }
 
     // [9] 配置文件
     print!("  [9] Config file ... ");
     let cfg_file = evocli.join("config.toml");
-    if cfg_file.exists() { ok!("config.toml found"); } else { warn!("No config (run: evocli init)"); }
+    if cfg_file.exists() {
+        ok!("config.toml found");
+    } else {
+        warn!("No config (run: evocli init)");
+    }
 
     // [10] 磁盘写入权限
     print!("  [10] Disk write access ... ");
     let _ = std::fs::create_dir_all(&evocli);
-    if evocli.exists() { ok!("~/.evocli/ writable"); } else { fail!("Cannot write to ~/.evocli"); }
+    if evocli.exists() {
+        ok!("~/.evocli/ writable");
+    } else {
+        fail!("Cannot write to ~/.evocli");
+    }
 
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  Result: {} passed  {} warnings  {} failed", pass, warn, fail);
+    println!(
+        "  Result: {} passed  {} warnings  {} failed",
+        pass, warn, fail
+    );
 
     if fail > 0 {
         println!("\n  → Run `evocli init` to fix critical issues.");

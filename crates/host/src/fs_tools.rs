@@ -1,4 +1,4 @@
-﻿//! fs_tools.rs — 文件系统工具实现（Capability Contract fs.* 工具组）
+//! fs_tools.rs — 文件系统工具实现（Capability Contract fs.* 工具组）
 //!
 //! 所有操作受 SecurityController 路径白名单约束。
 //! Unified diff 应用使用 diffy crate（纯 Rust，不依赖 patch 命令）。
@@ -10,23 +10,23 @@ use std::path::PathBuf;
 /// 读取文件内容
 pub fn fs_read(args: &Value) -> Result<Value> {
     let path = get_path(args, "path")?;
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| {
-            let cwd = std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "(unknown)".into());
-            // Relative path hint: if path is relative and file doesn't exist,
-            // tell the user what CWD evocli is using so they can diagnose the issue.
-            if path.is_relative() {
-                format!(
-                    "fs.read: cannot read '{}' (relative path, CWD='{}'). \
+    let content = std::fs::read_to_string(&path).with_context(|| {
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "(unknown)".into());
+        // Relative path hint: if path is relative and file doesn't exist,
+        // tell the user what CWD evocli is using so they can diagnose the issue.
+        if path.is_relative() {
+            format!(
+                "fs.read: cannot read '{}' (relative path, CWD='{}'). \
                      Tip: run evocli from your project root so relative paths resolve correctly.",
-                    path.display(), cwd
-                )
-            } else {
-                format!("fs.read: cannot read '{}'", path.display())
-            }
-        })?;
+                path.display(),
+                cwd
+            )
+        } else {
+            format!("fs.read: cannot read '{}'", path.display())
+        }
+    })?;
     Ok(Value::String(content))
 }
 
@@ -39,9 +39,9 @@ pub fn fs_read(args: &Value) -> Result<Value> {
 ///   - 两者都传：读取指定区间
 ///   - 都不传：等同于 fs.read（读全文件）
 pub fn fs_read_range(args: &Value) -> Result<Value> {
-    let path       = get_path(args, "path")?;
+    let path = get_path(args, "path")?;
     let start_line = args["start_line"].as_u64().map(|n| n as usize);
-    let end_line   = args["end_line"].as_u64().map(|n| n as usize);
+    let end_line = args["end_line"].as_u64().map(|n| n as usize);
 
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("fs.read_range: cannot read {}", path.display()))?;
@@ -59,7 +59,7 @@ pub fn fs_read_range(args: &Value) -> Result<Value> {
     }
 
     let start = start_line.unwrap_or(1).saturating_sub(1); // 0-indexed
-    let end   = end_line.unwrap_or(total_lines).min(total_lines); // inclusive, 1-indexed → exclusive
+    let end = end_line.unwrap_or(total_lines).min(total_lines); // inclusive, 1-indexed → exclusive
 
     let lines: Vec<&str> = content.lines().collect();
     let slice = &lines[start..end];
@@ -80,8 +80,9 @@ pub fn fs_read_range(args: &Value) -> Result<Value> {
 
 /// 写入文件内容
 pub fn fs_write(args: &Value) -> Result<Value> {
-    let path    = get_path(args, "path")?;
-    let content = args["content"].as_str()
+    let path = get_path(args, "path")?;
+    let content = args["content"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("fs.write: missing 'content'"))?;
     let dry_run = args["dry_run"].as_bool().unwrap_or(false);
 
@@ -107,11 +108,12 @@ pub fn fs_diff(args: &Value) -> Result<Value> {
 
 /// 将 unified diff 应用到文件
 pub fn fs_apply_diff(args: &Value) -> Result<Value> {
-    let path    = get_path(args, "path")?;
-    let diff    = args["diff"].as_str()
+    let path = get_path(args, "path")?;
+    let diff = args["diff"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("fs.apply_diff: missing 'diff'"))?;
-    let dry_run   = args["dry_run"].as_bool().unwrap_or(false);
-    let run_fmt   = args["run_format"].as_bool().unwrap_or(false);
+    let dry_run = args["dry_run"].as_bool().unwrap_or(false);
+    let run_fmt = args["run_format"].as_bool().unwrap_or(false);
     let run_tests = args["run_tests"].as_bool().unwrap_or(false);
     let auto_commit = args["auto_commit"].as_bool().unwrap_or(false);
 
@@ -128,8 +130,8 @@ pub fn fs_apply_diff(args: &Value) -> Result<Value> {
     std::fs::write(&path, &patched)
         .with_context(|| format!("fs.apply_diff: cannot write {}", path.display()))?;
 
-    let mut fmt_result   = None::<String>;
-    let mut test_result  = None::<serde_json::Value>;
+    let mut fmt_result = None::<String>;
+    let mut test_result = None::<serde_json::Value>;
 
     // ── 可选：格式化（Section 8）────────────────────────────────────
     if run_fmt {
@@ -144,7 +146,9 @@ pub fn fs_apply_diff(args: &Value) -> Result<Value> {
 
     // ── 可选：原子提交（Section 8 git 原子提交）──────────────────────
     let commit_hash = if auto_commit {
-        let msg = args["commit_message"].as_str().unwrap_or("refactor: apply AI diff");
+        let msg = args["commit_message"]
+            .as_str()
+            .unwrap_or("refactor: apply AI diff");
         let cwd = path.parent().unwrap_or(std::path::Path::new("."));
         let file_str = path.to_string_lossy().to_string();
         crate::git::git_commit(cwd, msg, &[file_str]).ok()
@@ -165,17 +169,16 @@ pub fn fs_apply_diff(args: &Value) -> Result<Value> {
 // ── helpers ──────────────────────────────────────────────────────
 
 fn get_path(args: &Value, key: &str) -> Result<PathBuf> {
-    let s = args[key].as_str()
+    let s = args[key]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing '{}' argument", key))?;
     Ok(PathBuf::from(s))
 }
 
 /// 应用 unified diff（标准 `---/+++/@@` 格式）到原始文本（diffy crate）
 fn apply_unified_diff(original: &str, diff: &str) -> Result<String> {
-    let patch = diffy::Patch::from_str(diff)
-        .context("Invalid unified diff format")?;
-    diffy::apply(original, &patch)
-        .context("Failed to apply diff: hunk(s) do not match the file")
+    let patch = diffy::Patch::from_str(diff).context("Invalid unified diff format")?;
+    diffy::apply(original, &patch).context("Failed to apply diff: hunk(s) do not match the file")
 }
 
 #[cfg(test)]
@@ -203,18 +206,19 @@ mod tests {
 fn run_formatter(path: &std::path::Path) -> Option<String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let (cmd, args) = match ext {
-        "rs"       => ("rustfmt", vec![path.to_str().unwrap_or("")]),
-        "py"       => ("black",   vec![path.to_str().unwrap_or(""), "--quiet"]),
-        "ts" | "js"=> ("prettier", vec!["--write", path.to_str().unwrap_or("")]),
-        "go"       => ("gofmt",   vec!["-w", path.to_str().unwrap_or("")]),
-        _          => return Some("skipped (unsupported extension)".to_string()),
+        "rs" => ("rustfmt", vec![path.to_str().unwrap_or("")]),
+        "py" => ("black", vec![path.to_str().unwrap_or(""), "--quiet"]),
+        "ts" | "js" => ("prettier", vec!["--write", path.to_str().unwrap_or("")]),
+        "go" => ("gofmt", vec!["-w", path.to_str().unwrap_or("")]),
+        _ => return Some("skipped (unsupported extension)".to_string()),
     };
-    let output = std::process::Command::new(cmd)
-        .args(args)
-        .output();
+    let output = std::process::Command::new(cmd).args(args).output();
     match output {
         Ok(o) if o.status.success() => Some("formatted".to_string()),
-        Ok(o) => Some(format!("formatter error: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(o) => Some(format!(
+            "formatter error: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
         Err(e) => Some(format!("formatter not found: {}", e)),
     }
 }

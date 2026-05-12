@@ -17,10 +17,10 @@ fn tools_path() -> PathBuf {
 /// 用户工具定义
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UserTool {
-    pub cmd:         String,
+    pub cmd: String,
     pub description: String,
     #[serde(default)]
-    pub readonly:    bool,  // true = 可在分析模式下运行
+    pub readonly: bool, // true = 可在分析模式下运行
 }
 
 fn load_tools() -> Result<BTreeMap<String, UserTool>> {
@@ -47,7 +47,9 @@ fn save_tools(tools: &BTreeMap<String, UserTool>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut content = String::from("# EvoCLI 用户注册工具\n# evocli tool register <name> <cmd> --description \"...\"\n\n");
+    let mut content = String::from(
+        "# EvoCLI 用户注册工具\n# evocli tool register <name> <cmd> --description \"...\"\n\n",
+    );
     for (name, tool) in tools {
         content.push_str(&format!("[tool.{}]\n", name));
         content.push_str(&format!("cmd         = {:?}\n", tool.cmd));
@@ -79,9 +81,7 @@ pub enum ToolsAction {
         readonly: bool,
     },
     /// Remove a registered user tool
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
 }
 
 pub fn run(action: ToolsAction) -> Result<()> {
@@ -104,17 +104,32 @@ pub fn run(action: ToolsAction) -> Result<()> {
                     };
                     println!("{:<20} {:<40} {}", name, cmd_str, tool.description);
                 }
-                println!("\n{} tool(s). LLM will discover these after next agent reload.", tools.len());
+                println!(
+                    "\n{} tool(s). LLM will discover these after next agent reload.",
+                    tools.len()
+                );
             }
         }
-        ToolsAction::Register { name, cmd, description, readonly } => {
+        ToolsAction::Register {
+            name,
+            cmd,
+            description,
+            readonly,
+        } => {
             let mut tools = load_tools()?;
             let desc = if description.is_empty() {
                 format!("Run: {}", cmd)
             } else {
                 description
             };
-            tools.insert(name.clone(), UserTool { cmd: cmd.clone(), description: desc.clone(), readonly });
+            tools.insert(
+                name.clone(),
+                UserTool {
+                    cmd: cmd.clone(),
+                    description: desc.clone(),
+                    readonly,
+                },
+            );
             save_tools(&tools)?;
             println!("✅ Registered tool '{}'", name);
             println!("   cmd:  {}", cmd);
@@ -139,14 +154,17 @@ pub fn run(action: ToolsAction) -> Result<()> {
 pub fn list_user_tools_json() -> serde_json::Value {
     match load_tools() {
         Ok(tools) => {
-            let items: Vec<serde_json::Value> = tools.iter().map(|(name, tool)| {
-                serde_json::json!({
-                    "name":        name,
-                    "cmd":         tool.cmd,
-                    "description": tool.description,
-                    "readonly":    tool.readonly,
+            let items: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|(name, tool)| {
+                    serde_json::json!({
+                        "name":        name,
+                        "cmd":         tool.cmd,
+                        "description": tool.description,
+                        "readonly":    tool.readonly,
+                    })
                 })
-            }).collect();
+                .collect();
             serde_json::json!({ "tools": items, "count": items.len() })
         }
         Err(e) => serde_json::json!({ "tools": [], "error": e.to_string() }),

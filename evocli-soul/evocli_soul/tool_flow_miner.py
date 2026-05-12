@@ -48,7 +48,6 @@ import json
 import logging
 import re
 import time
-import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -555,7 +554,7 @@ class ToolFlowMiner:
             steps.append(fs)
 
         # 提取触发标签（基于工具的 Tag）
-        from evocli_soul.tool_registry import REGISTRY_BY_NAME, Tag
+        from evocli_soul.tool_registry import REGISTRY_BY_NAME
         trigger_tags: set[str] = set()
         for step in abstracted_seq:
             spec = REGISTRY_BY_NAME.get(step.get("tool", ""))

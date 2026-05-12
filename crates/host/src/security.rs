@@ -17,9 +17,9 @@
 //! extra_denied_paths    = ["/prod"]          # 追加到 denied_paths
 //! ```
 
+use crate::config::SecurityConfig;
 use anyhow::{bail, Result};
 use std::path::Path;
-use crate::config::SecurityConfig;
 
 pub struct SecurityController {
     cfg: SecurityConfig,
@@ -29,18 +29,25 @@ pub struct SecurityController {
 
 impl SecurityController {
     pub fn new(cfg: &SecurityConfig) -> Self {
-        let blocked_regex: Vec<(regex::Regex, String)> = cfg.blocked_patterns.iter()
+        let blocked_regex: Vec<(regex::Regex, String)> = cfg
+            .blocked_patterns
+            .iter()
             .chain(cfg.extra_blocked_patterns.iter())
             .filter(|p| p.contains('\\') || p.contains('^') || p.contains('('))
-            .filter_map(|p| {
-                regex::Regex::new(p).ok().map(|re| (re, p.clone()))
-            })
+            .filter_map(|p| regex::Regex::new(p).ok().map(|re| (re, p.clone())))
             .collect();
 
-        let controller = Self { cfg: cfg.clone(), blocked_regex };
+        let controller = Self {
+            cfg: cfg.clone(),
+            blocked_regex,
+        };
         tracing::info!(
             "[Security] mode={} patterns={} path_rules={} allowed_cmds={}",
-            if cfg.allow_all_commands { "blacklist" } else { "strict-whitelist" },
+            if cfg.allow_all_commands {
+                "blacklist"
+            } else {
+                "strict-whitelist"
+            },
             cfg.blocked_patterns.len() + cfg.extra_blocked_patterns.len(),
             cfg.denied_paths.len() + cfg.extra_denied_paths.len(),
             cfg.allowed_commands.len() + cfg.extra_allowed_commands.len(),
@@ -53,14 +60,18 @@ impl SecurityController {
     }
 
     pub fn validate_shell_cmd(&self, cmd: &str) -> Result<()> {
-        let normalized = cmd.to_lowercase()
+        let normalized = cmd
+            .to_lowercase()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
 
         // Dangerous pattern check (only when block_dangerous_always=true)
         if self.cfg.block_dangerous_always {
-            for pattern in self.cfg.blocked_patterns.iter()
+            for pattern in self
+                .cfg
+                .blocked_patterns
+                .iter()
                 .chain(self.cfg.extra_blocked_patterns.iter())
                 .filter(|p| !p.contains('\\') && !p.contains('^') && !p.contains('('))
             {
@@ -90,7 +101,10 @@ impl SecurityController {
             .and_then(|n| n.to_str())
             .unwrap_or(first_token);
 
-        let allowed = self.cfg.allowed_commands.iter()
+        let allowed = self
+            .cfg
+            .allowed_commands
+            .iter()
             .chain(self.cfg.extra_allowed_commands.iter())
             .any(|a| binary == a.as_str());
 
@@ -99,7 +113,8 @@ impl SecurityController {
             bail!(
                 "[E401] Strict mode: '{}' not in allowed_commands.\n\
                  Edit ~/.evocli/config.toml [security] extra_allowed_commands = [\"{}\", ...]",
-                binary, binary,
+                binary,
+                binary,
             );
         }
 
@@ -116,13 +131,19 @@ impl SecurityController {
         let path_str = path.to_string_lossy().to_lowercase();
 
         // Config-driven denied paths — fully user-controlled
-        for denied in self.cfg.denied_paths.iter().chain(self.cfg.extra_denied_paths.iter()) {
+        for denied in self
+            .cfg
+            .denied_paths
+            .iter()
+            .chain(self.cfg.extra_denied_paths.iter())
+        {
             if path_str.contains(denied.to_lowercase().as_str()) {
                 self.audit_log("path.validate", &path.display().to_string(), false);
                 bail!(
                     "[E202] '{}' denied by path rule '{}'.\n\
                      Edit ~/.evocli/config.toml [security] denied_paths to change.",
-                    path.display(), denied
+                    path.display(),
+                    denied
                 );
             }
         }
@@ -132,25 +153,36 @@ impl SecurityController {
 
     #[allow(dead_code)]
     pub fn requires_approval(&self, tool: &str) -> bool {
-        matches!(tool, "git.commit" | "fs.write" | "fs.apply_diff" | "shell.run")
+        matches!(
+            tool,
+            "git.commit" | "fs.write" | "fs.apply_diff" | "shell.run"
+        )
     }
 
     pub fn audit_log(&self, operation: &str, detail: &str, allowed: bool) {
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let entry = format!("[{}] {} detail={:?} allowed={}\n",
-                            timestamp, operation, detail, allowed);
+        let entry = format!(
+            "[{}] {} detail={:?} allowed={}\n",
+            timestamp, operation, detail, allowed
+        );
         let audit_path = dirs::home_dir()
             .unwrap_or_default()
             .join(".evocli")
             .join("audit.log");
         use std::fs::OpenOptions;
         use std::io::Write;
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&audit_path) {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&audit_path)
+        {
             let _ = f.write_all(entry.as_bytes());
         }
     }
 }
 
 impl Default for SecurityController {
-    fn default() -> Self { Self::default_config() }
+    fn default() -> Self {
+        Self::default_config()
+    }
 }

@@ -19,16 +19,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
-use std::sync::Arc;
 
 // ── MCP Protocol Types ────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpTool {
-    pub name:        String,
+    pub name: String,
     pub description: Option<String>,
     #[serde(rename = "inputSchema")]
     pub input_schema: Value,
@@ -37,32 +37,32 @@ pub struct McpTool {
 #[derive(Debug, Serialize, Deserialize)]
 struct McpRequest {
     jsonrpc: String,
-    id:      u64,
-    method:  String,
-    params:  Option<Value>,
+    id: u64,
+    method: String,
+    params: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct McpResponse {
     jsonrpc: String,
-    id:      Option<u64>,
-    result:  Option<Value>,
-    error:   Option<McpError>,
+    id: Option<u64>,
+    result: Option<Value>,
+    error: Option<McpError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct McpError {
-    code:    i64,
+    code: i64,
     message: String,
 }
 
 // ── MCP Stdio Client ──────────────────────────────────────────────────────────
 
 pub struct McpClient {
-    _child:   Child,
+    _child: Child,
     stdin_tx: mpsc::UnboundedSender<String>,
-    pending:  Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<McpResponse>>>>,
-    next_id:  Arc<Mutex<u64>>,
+    pending: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<McpResponse>>>>,
+    next_id: Arc<Mutex<u64>>,
 }
 
 impl McpClient {
@@ -77,12 +77,12 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)   // Prevent zombie MCP server processes on McpClient drop
+            .kill_on_drop(true) // Prevent zombie MCP server processes on McpClient drop
             .spawn()
             .with_context(|| format!("Failed to start MCP server: {} {:?}", program, args))?;
 
         let stdout = child.stdout.take().unwrap();
-        let stdin  = child.stdin.take().unwrap();
+        let stdin = child.stdin.take().unwrap();
 
         let pending: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<McpResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -104,7 +104,9 @@ impl McpClient {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() { continue; }
+                if line.trim().is_empty() {
+                    continue;
+                }
                 if let Ok(resp) = serde_json::from_str::<McpResponse>(&line) {
                     if let Some(id) = resp.id {
                         let mut lock = pending_clone.lock().await;
@@ -129,15 +131,17 @@ impl McpClient {
 
     async fn next_id(&self) -> u64 {
         let mut id = self.next_id.lock().await;
-        let v = *id; *id += 1; v
+        let v = *id;
+        *id += 1;
+        v
     }
 
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value> {
-        let id  = self.next_id().await;
+        let id = self.next_id().await;
         let req = McpRequest {
             jsonrpc: "2.0".into(),
             id,
-            method:  method.into(),
+            method: method.into(),
             params,
         };
         let json = serde_json::to_string(&req)? + "\n";
@@ -145,7 +149,9 @@ impl McpClient {
         self.pending.lock().await.insert(id, tx);
         self.stdin_tx.send(json).context("MCP stdin closed")?;
         let resp = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await.context("MCP timeout")?.context("MCP channel closed")?;
+            .await
+            .context("MCP timeout")?
+            .context("MCP channel closed")?;
         if let Some(err) = resp.error {
             anyhow::bail!("MCP error {}: {}", err.code, err.message);
         }
@@ -153,11 +159,16 @@ impl McpClient {
     }
 
     async fn initialize(&self) -> Result<()> {
-        let _ = self.send_request("initialize", Some(serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "roots": { "listChanged": true }, "sampling": {} },
-            "clientInfo": { "name": "evocli", "version": env!("CARGO_PKG_VERSION") }
-        }))).await?;
+        let _ = self
+            .send_request(
+                "initialize",
+                Some(serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "roots": { "listChanged": true }, "sampling": {} },
+                    "clientInfo": { "name": "evocli", "version": env!("CARGO_PKG_VERSION") }
+                })),
+            )
+            .await?;
         let notif = serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         let _ = self.stdin_tx.send(notif.to_string() + "\n");
         Ok(())
@@ -165,16 +176,19 @@ impl McpClient {
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
         let result = self.send_request("tools/list", None).await?;
-        let tools: Vec<McpTool> = serde_json::from_value(
-            result.get("tools").cloned().unwrap_or(Value::Array(vec![]))
-        )?;
+        let tools: Vec<McpTool> =
+            serde_json::from_value(result.get("tools").cloned().unwrap_or(Value::Array(vec![])))?;
         Ok(tools)
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value> {
-        self.send_request("tools/call", Some(serde_json::json!({
-            "name": name, "arguments": arguments
-        }))).await
+        self.send_request(
+            "tools/call",
+            Some(serde_json::json!({
+                "name": name, "arguments": arguments
+            })),
+        )
+        .await
     }
 
     pub async fn list_resources(&self) -> Result<Value> {
@@ -182,37 +196,54 @@ impl McpClient {
     }
 
     pub async fn read_resource(&self, uri: &str) -> Result<Value> {
-        self.send_request("resources/read", Some(serde_json::json!({ "uri": uri }))).await
+        self.send_request("resources/read", Some(serde_json::json!({ "uri": uri })))
+            .await
     }
 }
 
 // ── MCP Registry ──────────────────────────────────────────────────────────────
 
 pub struct McpRegistry {
-    servers:     HashMap<String, McpClient>,
-    tool_index:  HashMap<String, String>,
+    servers: HashMap<String, McpClient>,
+    tool_index: HashMap<String, String>,
 }
 
 impl McpRegistry {
     pub fn new() -> Self {
-        Self { servers: HashMap::new(), tool_index: HashMap::new() }
+        Self {
+            servers: HashMap::new(),
+            tool_index: HashMap::new(),
+        }
     }
 
-    pub async fn register(&mut self, name: &str, program: &str, args: &[&str]) -> Result<Vec<McpTool>> {
+    pub async fn register(
+        &mut self,
+        name: &str,
+        program: &str,
+        args: &[&str],
+    ) -> Result<Vec<McpTool>> {
         let client = McpClient::connect_stdio(program, args).await?;
-        let tools  = client.list_tools().await?;
+        let tools = client.list_tools().await?;
         for tool in &tools {
             self.tool_index.insert(tool.name.clone(), name.to_string());
         }
         self.servers.insert(name.to_string(), client);
-        tracing::info!("MCP server '{}' registered with {} tools", name, tools.len());
+        tracing::info!(
+            "MCP server '{}' registered with {} tools",
+            name,
+            tools.len()
+        );
         Ok(tools)
     }
 
     pub async fn call_tool(&self, tool_name: &str, args: Value) -> Result<Value> {
-        let server_name = self.tool_index.get(tool_name)
+        let server_name = self
+            .tool_index
+            .get(tool_name)
             .with_context(|| format!("MCP tool '{}' not registered", tool_name))?;
-        let client = self.servers.get(server_name)
+        let client = self
+            .servers
+            .get(server_name)
             .with_context(|| format!("MCP server '{}' not found", server_name))?;
         client.call_tool(tool_name, args).await
     }
@@ -242,7 +273,9 @@ impl McpRegistry {
 }
 
 impl Default for McpRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── EvoCLI as MCP Server ──────────────────────────────────────────────────────
@@ -368,13 +401,16 @@ mod tests {
     #[test]
     fn tool_count_matches_expected() {
         let tools_val = evocli_as_mcp_tools();
-        let tools = tools_val["tools"].as_array()
+        let tools = tools_val["tools"]
+            .as_array()
             .expect("evocli_as_mcp_tools() must return {\"tools\": [...]}");
         assert_eq!(
-            tools.len(), EVOCLI_MCP_TOOL_COUNT,
+            tools.len(),
+            EVOCLI_MCP_TOOL_COUNT,
             "MCP tool count mismatch: got {}, expected {}. \
              Update EVOCLI_MCP_TOOL_COUNT after adding/removing tools.",
-            tools.len(), EVOCLI_MCP_TOOL_COUNT
+            tools.len(),
+            EVOCLI_MCP_TOOL_COUNT
         );
     }
 }

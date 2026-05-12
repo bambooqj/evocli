@@ -103,15 +103,15 @@ pub struct LlmConfig {
 /// with the correct auth headers — no extra configuration needed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmRolesConfig {
-    pub chat:         Option<LlmRoleConfig>,
-    pub architect:    Option<LlmRoleConfig>,
-    pub editor:       Option<LlmRoleConfig>,
-    pub summarize:    Option<LlmRoleConfig>,
-    pub commit:       Option<LlmRoleConfig>,
-    pub lint:         Option<LlmRoleConfig>,
+    pub chat: Option<LlmRoleConfig>,
+    pub architect: Option<LlmRoleConfig>,
+    pub editor: Option<LlmRoleConfig>,
+    pub summarize: Option<LlmRoleConfig>,
+    pub commit: Option<LlmRoleConfig>,
+    pub lint: Option<LlmRoleConfig>,
     pub memory_label: Option<LlmRoleConfig>,
-    pub code_review:  Option<LlmRoleConfig>,
-    pub wiki:         Option<LlmRoleConfig>,
+    pub code_review: Option<LlmRoleConfig>,
+    pub wiki: Option<LlmRoleConfig>,
 }
 
 /// Configuration for a single agent role.
@@ -121,7 +121,7 @@ pub struct LlmRoleConfig {
     /// Endpoint URL for this role. Falls back to [llm].base_url if not set.
     pub base_url: Option<String>,
     /// API key for this role. Falls back to [llm].api_key / keyring if not set.
-    pub api_key:  Option<String>,
+    pub api_key: Option<String>,
     /// Model name or tier alias ("fast"/"smart") for this role.
     /// Required: there is no fallback model if this is blank.
     pub model: String,
@@ -142,37 +142,61 @@ pub struct LlmGlobalParams {
     pub max_retries: u32,
     /// Per-task parameter overrides (indexed by task name)
     #[serde(default)]
-    pub architect:    LlmTaskParams,
+    pub architect: LlmTaskParams,
     #[serde(default)]
-    pub editor:       LlmTaskParams,
+    pub editor: LlmTaskParams,
     #[serde(default)]
-    pub commit:       LlmTaskParams,
+    pub commit: LlmTaskParams,
     #[serde(default)]
-    pub summarize:    LlmTaskParams,
+    pub summarize: LlmTaskParams,
     #[serde(default)]
-    pub lint:         LlmTaskParams,
+    pub lint: LlmTaskParams,
     #[serde(default)]
     pub memory_label: LlmTaskParams,
     #[serde(default)]
-    pub code_review:  LlmTaskParams,
+    pub code_review: LlmTaskParams,
     #[serde(default)]
-    pub wiki:         LlmTaskParams,
+    pub wiki: LlmTaskParams,
 }
 
 impl Default for LlmGlobalParams {
     fn default() -> Self {
         Self {
-            max_tokens:   default_max_tokens(),
-            temperature:  default_temperature(),
-            max_retries:  default_max_retries(),
-            architect:    LlmTaskParams { max_tokens: Some(8192), temperature: Some(0.7) },
-            editor:       LlmTaskParams { max_tokens: Some(4096), temperature: Some(0.2) },
-            commit:       LlmTaskParams { max_tokens: Some(120),  temperature: Some(0.3) },
-            summarize:    LlmTaskParams { max_tokens: Some(1500), temperature: Some(0.3) },
-            lint:         LlmTaskParams { max_tokens: Some(2048), temperature: Some(0.0) },
-            memory_label: LlmTaskParams { max_tokens: Some(60),   temperature: Some(0.0) },
-            code_review:  LlmTaskParams { max_tokens: Some(4096), temperature: Some(0.5) },
-            wiki:         LlmTaskParams { max_tokens: Some(400),  temperature: Some(0.4) },
+            max_tokens: default_max_tokens(),
+            temperature: default_temperature(),
+            max_retries: default_max_retries(),
+            architect: LlmTaskParams {
+                max_tokens: Some(8192),
+                temperature: Some(0.7),
+            },
+            editor: LlmTaskParams {
+                max_tokens: Some(4096),
+                temperature: Some(0.2),
+            },
+            commit: LlmTaskParams {
+                max_tokens: Some(120),
+                temperature: Some(0.3),
+            },
+            summarize: LlmTaskParams {
+                max_tokens: Some(1500),
+                temperature: Some(0.3),
+            },
+            lint: LlmTaskParams {
+                max_tokens: Some(2048),
+                temperature: Some(0.0),
+            },
+            memory_label: LlmTaskParams {
+                max_tokens: Some(60),
+                temperature: Some(0.0),
+            },
+            code_review: LlmTaskParams {
+                max_tokens: Some(4096),
+                temperature: Some(0.5),
+            },
+            wiki: LlmTaskParams {
+                max_tokens: Some(400),
+                temperature: Some(0.4),
+            },
         }
     }
 }
@@ -180,7 +204,7 @@ impl Default for LlmGlobalParams {
 /// Per-task parameter overrides (both optional — falls back to global defaults)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmTaskParams {
-    pub max_tokens:  Option<usize>,
+    pub max_tokens: Option<usize>,
     pub temperature: Option<f64>,
 }
 
@@ -204,45 +228,45 @@ pub struct LlmTaskParams {
 pub struct LlmTasksConfig {
     /// Main conversation and generic agent requests
     #[serde(default = "tier_smart")]
-    pub chat:         String,
+    pub chat: String,
     /// Architect mode planning (system design, multi-file analysis)
     #[serde(default = "tier_smart")]
-    pub architect:    String,
+    pub architect: String,
     /// Code editing (SEARCH/REPLACE, precise changes — fast model usually fine)
     #[serde(default = "tier_fast")]
-    pub editor:       String,
+    pub editor: String,
     /// Session compression and context summarization
     #[serde(default = "tier_fast")]
-    pub summarize:    String,
+    pub summarize: String,
     /// Commit message generation
     #[serde(default = "tier_fast")]
-    pub commit:       String,
+    pub commit: String,
     /// Lint/test output analysis and fix suggestions
     #[serde(default = "tier_fast")]
-    pub lint:         String,
+    pub lint: String,
     /// Memory classification (MemRouter labeling)
     #[serde(default = "tier_fast")]
     pub memory_label: String,
     /// Code review (needs deeper reasoning)
     #[serde(default = "tier_smart")]
-    pub code_review:  String,
+    pub code_review: String,
     /// Wiki and documentation generation
     #[serde(default = "tier_fast")]
-    pub wiki:         String,
+    pub wiki: String,
 }
 
 impl Default for LlmTasksConfig {
     fn default() -> Self {
         Self {
-            chat:         tier_smart(),
-            architect:    tier_smart(),
-            editor:       tier_fast(),
-            summarize:    tier_fast(),
-            commit:       tier_fast(),
-            lint:         tier_fast(),
+            chat: tier_smart(),
+            architect: tier_smart(),
+            editor: tier_fast(),
+            summarize: tier_fast(),
+            commit: tier_fast(),
+            lint: tier_fast(),
             memory_label: tier_fast(),
-            code_review:  tier_smart(),
-            wiki:         tier_fast(),
+            code_review: tier_smart(),
+            wiki: tier_fast(),
         }
     }
 }
@@ -369,18 +393,39 @@ pub struct SecurityConfig {
     pub extra_denied_paths: Vec<String>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// 内置命令白名单默认值（等价于之前硬编码的 ALLOWED_PREFIXES）
 pub fn default_allowed_commands() -> Vec<String> {
     vec![
         // Build tools
-        "cargo","rustc","rustup","rust-analyzer",
-        "npm","npx","node","pnpm","yarn","bun","deno",
-        "python","python3","pip","uv",
-        "go","gofmt","gopls",
-        "make","cmake","ninja",
-        "mvn","gradle","java","javac",
+        "cargo",
+        "rustc",
+        "rustup",
+        "rust-analyzer",
+        "npm",
+        "npx",
+        "node",
+        "pnpm",
+        "yarn",
+        "bun",
+        "deno",
+        "python",
+        "python3",
+        "pip",
+        "uv",
+        "go",
+        "gofmt",
+        "gopls",
+        "make",
+        "cmake",
+        "ninja",
+        "mvn",
+        "gradle",
+        "java",
+        "javac",
         "dotnet",
         // EvoCLI itself
         "evocli",
@@ -389,45 +434,103 @@ pub fn default_allowed_commands() -> Vec<String> {
         // Navigation
         "cd",
         // Shell read-only
-        "cat","ls","dir","echo",
-        "head","tail","wc","grep","find","fd","rg",
-        "pwd","which","type",
-        "env","printenv",
-        "stat","file",
-        "diff","patch",
-        "sort","uniq","cut","awk","sed","xargs","tr",
-        "curl","wget",
-        "jq","yq",
-        "zip","unzip","tar","gzip","gunzip",
+        "cat",
+        "ls",
+        "dir",
+        "echo",
+        "head",
+        "tail",
+        "wc",
+        "grep",
+        "find",
+        "fd",
+        "rg",
+        "pwd",
+        "which",
+        "type",
+        "env",
+        "printenv",
+        "stat",
+        "file",
+        "diff",
+        "patch",
+        "sort",
+        "uniq",
+        "cut",
+        "awk",
+        "sed",
+        "xargs",
+        "tr",
+        "curl",
+        "wget",
+        "jq",
+        "yq",
+        "zip",
+        "unzip",
+        "tar",
+        "gzip",
+        "gunzip",
         // Process inspection
-        "ps","top","htop",
+        "ps",
+        "top",
+        "htop",
         // Create / move
-        "mkdir","touch","cp","mv",
-    ].into_iter().map(String::from).collect()
+        "mkdir",
+        "touch",
+        "cp",
+        "mv",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// 内置危险模式黑名单默认值（等价于之前硬编码的 SHELL_BLOCKED_DANGEROUS）
 pub fn default_blocked_patterns() -> Vec<String> {
     vec![
         // 递归删除根目录
-        "rm -rf /","rm -rf /*","rm -rf ~","rm -rf ~/",
-        "rm -rf /etc","rm -rf /usr","rm -rf /bin","rm -rf /sbin",
-        "rm -rf /lib","rm -rf /var","rm -rf /home","rm -rf /root",
-        "rm -rf /boot","rm -rf /proc","rm -rf /sys",
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf ~",
+        "rm -rf ~/",
+        "rm -rf /etc",
+        "rm -rf /usr",
+        "rm -rf /bin",
+        "rm -rf /sbin",
+        "rm -rf /lib",
+        "rm -rf /var",
+        "rm -rf /home",
+        "rm -rf /root",
+        "rm -rf /boot",
+        "rm -rf /proc",
+        "rm -rf /sys",
         // 权限核弹
-        "chmod -r 777 /","chmod 777 /",
+        "chmod -r 777 /",
+        "chmod 777 /",
         // 原始磁盘写入
-        "> /dev/sda","> /dev/nvme","dd if=","dd of=/dev/",
+        "> /dev/sda",
+        "> /dev/nvme",
+        "dd if=",
+        "dd of=/dev/",
         // 格式化
-        "mkfs","wipefs","shred /dev/",
+        "mkfs",
+        "wipefs",
+        "shred /dev/",
         // Fork bomb
         ":(){ :|:& };:",
         // find -delete on root
-        "find / -delete","find /* -delete",
+        "find / -delete",
+        "find /* -delete",
         // Windows 核弹
-        "format c:","format d:",
-        "del /f /s /q c:\\","rd /s /q c:\\","rd /s /q d:\\",
-    ].into_iter().map(String::from).collect()
+        "format c:",
+        "format d:",
+        "del /f /s /q c:\\",
+        "rd /s /q c:\\",
+        "rd /s /q d:\\",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// 内置路径黑名单默认值（等价于之前硬编码的 PATH_DENY_IMMUTABLE）
@@ -441,9 +544,11 @@ pub fn default_denied_paths() -> Vec<String> {
         "/etc/shadow",
         "/etc/sudoers",
         "\\Windows\\System32",
-    ].into_iter().map(String::from).collect()
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
@@ -454,27 +559,55 @@ pub struct MemoryConfig {
 
 // ── Defaults ─────────────────────────────────────────────
 
-fn default_provider() -> String { "openai".into() }
+fn default_provider() -> String {
+    "openai".into()
+}
 // Global defaults use OpenAI since it's the most widely available provider.
 // These are overridden by evocli init based on the selected provider.
 // Users should set [llm.tiers] in config.toml for their actual provider.
-fn default_fast_model()  -> String { "gpt-4o-mini".into() }
-fn default_smart_model() -> String { "gpt-4o".into() }
-fn default_max_total() -> usize { 128_000 }
-fn default_max_code() -> usize { 32_000 }
-fn default_max_tokens()    -> usize { 4096 }
-fn default_temperature()   -> f64   { 0.7 }
-fn default_max_retries()   -> u32   { 3 }
-fn tier_fast()  -> String { "fast".into() }
-fn tier_smart() -> String { "smart".into() }
+fn default_fast_model() -> String {
+    "gpt-4o-mini".into()
+}
+fn default_smart_model() -> String {
+    "gpt-4o".into()
+}
+fn default_max_total() -> usize {
+    128_000
+}
+fn default_max_code() -> usize {
+    32_000
+}
+fn default_max_tokens() -> usize {
+    4096
+}
+fn default_temperature() -> f64 {
+    0.7
+}
+fn default_max_retries() -> u32 {
+    3
+}
+fn tier_fast() -> String {
+    "fast".into()
+}
+fn tier_smart() -> String {
+    "smart".into()
+}
 fn default_shell_whitelist() -> Vec<String> {
     vec![
-        "cargo *".into(), "npm *".into(), "git *".into(),
-        "python *".into(), "rustc *".into(), "ls *".into(),
-        "cat *".into(), "grep *".into(), "find *".into(),
+        "cargo *".into(),
+        "npm *".into(),
+        "git *".into(),
+        "python *".into(),
+        "rustc *".into(),
+        "ls *".into(),
+        "cat *".into(),
+        "grep *".into(),
+        "find *".into(),
     ]
 }
-fn default_max_episodes() -> usize { 1000 }
+fn default_max_episodes() -> usize {
+    1000
+}
 
 /// Agent behaviour tuning — all values configurable in config.toml [agent]
 ///
@@ -532,33 +665,61 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_tool_calls:          default_max_tool_calls(),
-            max_reflections:         default_max_reflections(),
-            stream_timeout_s:        default_stream_timeout_s(),
+            max_tool_calls: default_max_tool_calls(),
+            max_reflections: default_max_reflections(),
+            stream_timeout_s: default_stream_timeout_s(),
             context_build_timeout_s: default_context_build_timeout_s(),
-            rpc_timeout_ms:          default_rpc_timeout_ms(),
-            first_chunk_timeout_s:   default_first_chunk_timeout_s(),
-            history_compress_turns:  default_history_compress_turns(),
+            rpc_timeout_ms: default_rpc_timeout_ms(),
+            first_chunk_timeout_s: default_first_chunk_timeout_s(),
+            history_compress_turns: default_history_compress_turns(),
             history_compress_tokens: default_history_compress_tokens(),
         }
     }
 }
 
-fn default_max_tool_calls()          -> usize { 20 }
-fn default_max_reflections()         -> usize { 3 }
-fn default_stream_timeout_s()        -> u64   { 30 }
-fn default_context_build_timeout_s() -> u64   { 20 }
-fn default_rpc_timeout_ms()          -> u64   { 90_000 }
-fn default_first_chunk_timeout_s()   -> u64   { 120 }  // raised from 60s — context building can take time
-fn default_history_compress_turns()  -> usize { 10 }
-fn default_history_compress_tokens() -> usize { 8_000 }
+fn default_max_tool_calls() -> usize {
+    20
+}
+fn default_max_reflections() -> usize {
+    3
+}
+fn default_stream_timeout_s() -> u64 {
+    30
+}
+fn default_context_build_timeout_s() -> u64 {
+    20
+}
+fn default_rpc_timeout_ms() -> u64 {
+    90_000
+}
+fn default_first_chunk_timeout_s() -> u64 {
+    120
+} // raised from 60s — context building can take time
+fn default_history_compress_turns() -> usize {
+    10
+}
+fn default_history_compress_tokens() -> usize {
+    8_000
+}
 
-fn default_lpa_max_iter()         -> usize { 20 }
-fn default_min_community_size()   -> usize { 2 }
-fn default_blast_radius_depth()   -> usize { 5 }
-fn default_rrf_k()                -> f32   { 60.0 }
-fn default_bm25_weight()          -> f32   { 0.4 }
-fn default_vector_weight()        -> f32   { 0.6 }
+fn default_lpa_max_iter() -> usize {
+    20
+}
+fn default_min_community_size() -> usize {
+    2
+}
+fn default_blast_radius_depth() -> usize {
+    5
+}
+fn default_rrf_k() -> f32 {
+    60.0
+}
+fn default_bm25_weight() -> f32 {
+    0.4
+}
+fn default_vector_weight() -> f32 {
+    0.6
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphConfig {
@@ -586,12 +747,12 @@ pub struct GraphConfig {
 impl Default for GraphConfig {
     fn default() -> Self {
         Self {
-            lpa_max_iter:       default_lpa_max_iter(),
+            lpa_max_iter: default_lpa_max_iter(),
             min_community_size: default_min_community_size(),
             blast_radius_depth: default_blast_radius_depth(),
-            rrf_k:              default_rrf_k(),
-            bm25_weight:        default_bm25_weight(),
-            vector_weight:      default_vector_weight(),
+            rrf_k: default_rrf_k(),
+            bm25_weight: default_bm25_weight(),
+            vector_weight: default_vector_weight(),
         }
     }
 }
@@ -625,22 +786,24 @@ pub struct TuiConfig {
 
 impl Default for TuiConfig {
     fn default() -> Self {
-        Self { enable_mouse: false }
+        Self {
+            enable_mouse: false,
+        }
     }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            llm:         LlmConfig::default(),
-            context:     ContextConfig::default(),
-            safety:      SafetyConfig::default(),
-            security:    SecurityConfig::default(),
-            memory:      MemoryConfig::default(),
-            agent:       AgentConfig::default(),
-            tui:         TuiConfig::default(),
+            llm: LlmConfig::default(),
+            context: ContextConfig::default(),
+            safety: SafetyConfig::default(),
+            security: SecurityConfig::default(),
+            memory: MemoryConfig::default(),
+            agent: AgentConfig::default(),
+            tui: TuiConfig::default(),
             soul_script: None,
-            graph:       GraphConfig::default(),
+            graph: GraphConfig::default(),
         }
     }
 }
@@ -649,11 +812,11 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             base_url: None,
-            api_key:  None,
-            tiers:    LlmTiers::default(),
-            params:   LlmGlobalParams::default(),
-            tasks:    LlmTasksConfig::default(),
-            roles:    LlmRolesConfig::default(),
+            api_key: None,
+            tiers: LlmTiers::default(),
+            params: LlmGlobalParams::default(),
+            tasks: LlmTasksConfig::default(),
+            roles: LlmRolesConfig::default(),
         }
     }
 }
@@ -671,20 +834,20 @@ impl Default for ContextConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            allow_all_commands:     true,
+            allow_all_commands: true,
             // allow_all_paths=true by default: the user controls their own project files.
             // Add specific denied_paths in config.toml if you need to restrict access.
-            allow_all_paths:        true,
+            allow_all_paths: true,
             block_dangerous_always: true,
-            allowed_commands:       default_allowed_commands(),
+            allowed_commands: default_allowed_commands(),
             extra_allowed_commands: vec![],
-            blocked_patterns:       default_blocked_patterns(),
+            blocked_patterns: default_blocked_patterns(),
             extra_blocked_patterns: vec![],
             // Default deny list is empty — user opts in to path restrictions.
             // Example protected paths to add manually:
             //   denied_paths = [".evocli/config.toml", ".ssh", ".gnupg"]
-            denied_paths:           vec![],
-            extra_denied_paths:     vec![],
+            denied_paths: vec![],
+            extra_denied_paths: vec![],
         }
     }
 }
@@ -692,8 +855,8 @@ impl Default for SecurityConfig {
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
-            auto_approve_writes:  false,
-            shell_whitelist:      default_shell_whitelist(),
+            auto_approve_writes: false,
+            shell_whitelist: default_shell_whitelist(),
             require_diff_preview: false,
         }
     }
@@ -701,7 +864,9 @@ impl Default for SafetyConfig {
 
 impl Default for MemoryConfig {
     fn default() -> Self {
-        Self { max_episodes: default_max_episodes() }
+        Self {
+            max_episodes: default_max_episodes(),
+        }
     }
 }
 
@@ -740,9 +905,10 @@ impl Config {
         if let Ok(cwd) = std::env::current_dir() {
             let project_path = cwd.join(".evocli").join("config.toml");
             if project_path.exists() {
-                match std::fs::read_to_string(&project_path)
-                    .and_then(|s| toml::from_str::<toml::Value>(&s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
-                {
+                match std::fs::read_to_string(&project_path).and_then(|s| {
+                    toml::from_str::<toml::Value>(&s)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                }) {
                     Ok(project_val) => {
                         // Re-parse global as Value for merging
                         let global_str = toml::to_string(&config).unwrap_or_default();
@@ -752,11 +918,16 @@ impl Config {
                                 // Convert merged value back to Config
                                 match toml::to_string(&merged_val)
                                     .map_err(|e| format!("re-serialize: {}", e))
-                                    .and_then(|s| toml::from_str::<Config>(&s).map_err(|e| format!("re-parse: {}", e)))
-                                {
+                                    .and_then(|s| {
+                                        toml::from_str::<Config>(&s)
+                                            .map_err(|e| format!("re-parse: {}", e))
+                                    }) {
                                     Ok(merged) => {
                                         config = merged;
-                                        tracing::debug!("Loaded project config: {}", project_path.display());
+                                        tracing::debug!(
+                                            "Loaded project config: {}",
+                                            project_path.display()
+                                        );
                                     }
                                     Err(e) => {
                                         tracing::warn!(
@@ -767,12 +938,19 @@ impl Config {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to re-serialize global config for merge: {}", e);
+                                tracing::warn!(
+                                    "Failed to re-serialize global config for merge: {}",
+                                    e
+                                );
                             }
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to parse project config {}: {}", project_path.display(), e);
+                        tracing::warn!(
+                            "Failed to parse project config {}: {}",
+                            project_path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -783,8 +961,7 @@ impl Config {
         // New builds default to allow_all_commands = true (blacklist mode).
         // If the loaded config still has the old false default AND no extra commands
         // were configured (i.e. user never deliberately chose strict mode), migrate.
-        if !config.security.allow_all_commands
-            && config.security.extra_allowed_commands.is_empty()
+        if !config.security.allow_all_commands && config.security.extra_allowed_commands.is_empty()
         {
             tracing::info!(
                 "[Config] Migrating security.allow_all_commands false→true (blacklist mode). \
@@ -800,12 +977,16 @@ impl Config {
         // matches the old hardcoded defaults (user never customized it), migrate to
         // allow_all_paths=true so the AI can read project files freely.
         let old_default_denied = default_denied_paths();
-        let user_denied_set: std::collections::HashSet<&str> =
-            config.security.denied_paths.iter().map(|s| s.as_str()).collect();
+        let user_denied_set: std::collections::HashSet<&str> = config
+            .security
+            .denied_paths
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         let old_default_set: std::collections::HashSet<&str> =
             old_default_denied.iter().map(|s| s.as_str()).collect();
-        let is_default_deny_list = user_denied_set == old_default_set
-            || config.security.denied_paths.is_empty();
+        let is_default_deny_list =
+            user_denied_set == old_default_set || config.security.denied_paths.is_empty();
 
         if !config.security.allow_all_paths
             && config.security.extra_denied_paths.is_empty()
@@ -829,8 +1010,7 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
         tracing::info!("Config saved to {}", path.display());
@@ -855,7 +1035,9 @@ fn merge_toml(dst: &mut toml::Value, src: toml::Value) {
     match (dst, src) {
         (toml::Value::Table(dst_table), toml::Value::Table(src_table)) => {
             for (key, src_val) in src_table {
-                let dst_entry = dst_table.entry(key).or_insert(toml::Value::Table(toml::map::Map::new()));
+                let dst_entry = dst_table
+                    .entry(key)
+                    .or_insert(toml::Value::Table(toml::map::Map::new()));
                 merge_toml(dst_entry, src_val);
             }
         }
@@ -900,20 +1082,18 @@ pub fn resolve_soul_path() -> String {
 
     // 优先级 4：从可执行文件向上查找（处理 target/debug/ 场景）
     if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent()
+        let mut dir = exe
+            .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
         for _ in 0..6 {
-            let candidate = dir
-                .join("evocli-soul")
-                .join("evocli_soul")
-                .join("main.py");
+            let candidate = dir.join("evocli-soul").join("evocli_soul").join("main.py");
             if candidate.exists() {
                 return candidate.to_string_lossy().to_string();
             }
             match dir.parent() {
                 Some(p) => dir = p.to_path_buf(),
-                None    => break,
+                None => break,
             }
         }
     }

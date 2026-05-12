@@ -82,10 +82,7 @@ where
             };
 
             for path in &event.paths {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if WATCHED_EXTENSIONS.contains(&ext) {
                     callback(FileChangedEvent {
                         path: path.clone(),
@@ -96,7 +93,10 @@ where
         }
     });
 
-    Ok(WatcherHandle { stop, _watcher: watcher })
+    Ok(WatcherHandle {
+        stop,
+        _watcher: watcher,
+    })
 }
 
 /// Watcher stop handle.
@@ -106,7 +106,7 @@ where
 ///   2. Drops `_watcher`, which causes the OS backend to stop delivering events
 ///      and closes the internal channel — the dispatch thread loop ends cleanly.
 pub struct WatcherHandle {
-    stop:     Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
     /// Kept alive so that OS events keep flowing; dropping stops the backend.
     _watcher: RecommendedWatcher,
 }
@@ -130,7 +130,8 @@ pub fn watch_and_reindex(root: &Path) -> Result<WatcherHandle> {
             if let Err(e) = idx.index_file(&event.path) {
                 tracing::warn!(
                     "[file_watcher] Auto-reindex failed for {:?}: {}",
-                    event.path, e
+                    event.path,
+                    e
                 );
             } else {
                 tracing::debug!("[file_watcher] Auto-reindexed: {:?}", event.path);

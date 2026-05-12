@@ -46,10 +46,10 @@ const UV_ARCHIVE: &str = "uv-aarch64-unknown-linux-musl.tar.gz";
 // fallback for other platforms
 #[cfg(not(any(
     all(target_os = "windows", target_arch = "x86_64"),
-    all(target_os = "macos",   target_arch = "aarch64"),
-    all(target_os = "macos",   target_arch = "x86_64"),
-    all(target_os = "linux",   target_arch = "x86_64"),
-    all(target_os = "linux",   target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 )))]
 const UV_ARCHIVE: &str = "uv-x86_64-unknown-linux-musl.tar.gz";
 
@@ -96,7 +96,12 @@ impl PythonManager {
     #[allow(dead_code)]
     pub fn uv_available() -> bool {
         let uv = Self::uv_exe();
-        uv.exists() && Command::new(&uv).arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+        uv.exists()
+            && Command::new(&uv)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
     }
 
     pub fn python_ready() -> bool {
@@ -113,7 +118,9 @@ impl PythonManager {
             if let Ok(entries) = std::fs::read_dir(&lib) {
                 for e in entries.flatten() {
                     let sp = e.path().join("site-packages").join("evocli_soul");
-                    if sp.exists() { return true; }
+                    if sp.exists() {
+                        return true;
+                    }
                 }
             }
             return false;
@@ -168,9 +175,14 @@ impl PythonManager {
         println!("  → Downloading uv from {}", url);
         let dl_ok = if cfg!(windows) {
             Command::new("powershell")
-                .args(["-Command",
-                    &format!("Invoke-WebRequest -Uri '{}' -OutFile '{}'",
-                        url, archive_path.display())])
+                .args([
+                    "-Command",
+                    &format!(
+                        "Invoke-WebRequest -Uri '{}' -OutFile '{}'",
+                        url,
+                        archive_path.display()
+                    ),
+                ])
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
@@ -187,15 +199,24 @@ impl PythonManager {
         // 解压
         if UV_ARCHIVE.ends_with(".zip") {
             Command::new("powershell")
-                .args(["-Command",
-                    &format!("Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                        archive_path.display(), bin_dir.display())])
+                .args([
+                    "-Command",
+                    &format!(
+                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                        archive_path.display(),
+                        bin_dir.display()
+                    ),
+                ])
                 .status()?;
         } else {
             Command::new("tar")
-                .args(["-xzf", archive_path.to_str().unwrap_or(""),
-                       "-C", bin_dir.to_str().unwrap_or(""),
-                       "--strip-components=0"])
+                .args([
+                    "-xzf",
+                    archive_path.to_str().unwrap_or(""),
+                    "-C",
+                    bin_dir.to_str().unwrap_or(""),
+                    "--strip-components=0",
+                ])
                 .status()?;
         }
 
@@ -212,7 +233,11 @@ impl PythonManager {
                 .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
                 .flat_map(|subdir| {
                     let candidate = subdir.path().join(uv_name);
-                    if candidate.exists() { Some(candidate) } else { None }
+                    if candidate.exists() {
+                        Some(candidate)
+                    } else {
+                        None
+                    }
                 })
                 .next();
 
@@ -273,23 +298,27 @@ impl PythonManager {
         println!("  → Installing Python {} via uv...", PYTHON_VERSION);
         let status = Command::new(uv)
             .args([
-                "python", "install",
+                "python",
+                "install",
                 PYTHON_VERSION,
-                "--python-preference", "managed",
+                "--python-preference",
+                "managed",
             ])
             .status()
             .context("Failed to run uv python install")?;
 
-        anyhow::ensure!(status.success(), "uv python install {} failed", PYTHON_VERSION);
+        anyhow::ensure!(
+            status.success(),
+            "uv python install {} failed",
+            PYTHON_VERSION
+        );
 
         // 获取实际 Python 路径
         let output = Command::new(uv)
             .args(["python", "find", PYTHON_VERSION])
             .output()
             .context("uv python find failed")?;
-        let py_path = PathBuf::from(
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        );
+        let py_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string());
 
         println!("  ✓ Python {} at {}", PYTHON_VERSION, py_path.display());
         Ok(py_path)
@@ -301,13 +330,17 @@ impl PythonManager {
         let venv = Self::venv_dir();
 
         // 创建 venv（如不存在）
-        if !venv.join(if cfg!(windows) { "Scripts" } else { "bin" }).exists() {
+        if !venv
+            .join(if cfg!(windows) { "Scripts" } else { "bin" })
+            .exists()
+        {
             println!("  → Creating evocli-soul venv at {}...", venv.display());
             let status = Command::new(uv)
                 .args([
                     "venv",
                     venv.to_str().unwrap_or("."),
-                    "--python", PYTHON_VERSION,
+                    "--python",
+                    PYTHON_VERSION,
                     "--seed",
                 ])
                 .status()
@@ -320,7 +353,11 @@ impl PythonManager {
             println!("  → Installing evocli-soul[full] — all features included...");
             println!("  → This may take 3-5 minutes on first run (downloading ML models etc.)");
 
-            let venv_python = venv.join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python3" });
+            let venv_python = venv.join(if cfg!(windows) {
+                "Scripts/python.exe"
+            } else {
+                "bin/python3"
+            });
             let venv_python_str = venv_python.to_str().unwrap_or("python");
 
             let soul_path_str = soul_dir.map(|d| d.to_str().unwrap_or(".")).unwrap_or(".");
@@ -332,14 +369,22 @@ impl PythonManager {
                      Expected location: same directory as evocli binary.\n\
                      Current exe: {}\n\
                      Please ensure the evocli-soul/ folder is in the same directory as evocli.",
-                    std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "<unknown>".into())
+                    std::env::current_exe()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| "<unknown>".into())
                 );
             }
 
             // Strategy 1: install [full] extras (preferred — all features)
             let full_install_ok = Command::new(uv)
-                .args(["pip", "install", "-e", &path_with_extras,
-                       "--python", venv_python_str])
+                .args([
+                    "pip",
+                    "install",
+                    "-e",
+                    &path_with_extras,
+                    "--python",
+                    venv_python_str,
+                ])
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
@@ -350,15 +395,25 @@ impl PythonManager {
             } else {
                 // Strategy 2: dependency conflict in [full] — install core packages only
                 // This ensures litellm/pydantic-ai work even if optional extras fail
-                eprintln!("  ⚠ Full install failed (dependency conflict). Installing core packages...");
+                eprintln!(
+                    "  ⚠ Full install failed (dependency conflict). Installing core packages..."
+                );
                 let core_args = [
-                    "pip", "install",
+                    "pip",
+                    "install",
                     // Required deps (same as pyproject.toml [dependencies])
-                    "litellm>=1.83", "tiktoken>=0.7", "pydantic-ai>=0.0.46",
-                    "langgraph>=0.3", "langgraph-checkpoint-sqlite>=2.0",
-                    "instructor>=1.15", "anyio>=4.6", "httpx>=0.27", "jinja2>=3.1",
+                    "litellm>=1.83",
+                    "tiktoken>=0.7",
+                    "pydantic-ai>=0.0.46",
+                    "langgraph>=0.3",
+                    "langgraph-checkpoint-sqlite>=2.0",
+                    "instructor>=1.15",
+                    "anyio>=4.6",
+                    "httpx>=0.27",
+                    "jinja2>=3.1",
                     // Install Soul as editable (no extras)
-                    "--python", venv_python_str,
+                    "--python",
+                    venv_python_str,
                 ];
                 let core_ok = Command::new(uv)
                     .args(core_args)
@@ -368,8 +423,14 @@ impl PythonManager {
 
                 // Also install Soul itself (editable, no extras)
                 let soul_ok = Command::new(uv)
-                    .args(["pip", "install", "-e", soul_path_str,
-                           "--python", venv_python_str])
+                    .args([
+                        "pip",
+                        "install",
+                        "-e",
+                        soul_path_str,
+                        "--python",
+                        venv_python_str,
+                    ])
                     .status()
                     .map(|s| s.success())
                     .unwrap_or(false);
@@ -402,14 +463,19 @@ impl PythonManager {
     pub fn setup(soul_dir: Option<&Path>) -> Result<PathBuf> {
         println!("\n  Setting up managed Python environment...");
 
-        let uv = Self::ensure_uv()
-            .context("Failed to ensure uv is available. Install uv manually: https://docs.astral.sh/uv/")?;
+        let uv = Self::ensure_uv().context(
+            "Failed to ensure uv is available. Install uv manually: https://docs.astral.sh/uv/",
+        )?;
 
         let _python = Self::ensure_python(&uv)?;
-        let _venv   = Self::ensure_venv(&uv, soul_dir)?;
+        let _venv = Self::ensure_venv(&uv, soul_dir)?;
 
         let py = Self::python_exe();
-        anyhow::ensure!(py.exists(), "Python exe not found at {} after setup", py.display());
+        anyhow::ensure!(
+            py.exists(),
+            "Python exe not found at {} after setup",
+            py.display()
+        );
         println!("  ✓ Python environment ready: {}", py.display());
         Ok(py)
     }
@@ -428,14 +494,14 @@ impl PythonManager {
     /// 状态报告（供 doctor_cmd 使用）
     #[allow(dead_code)]
     pub fn status_report() -> String {
-        let uv_ok  = Self::uv_available();
-        let py_ok  = Self::python_ready();
+        let uv_ok = Self::uv_available();
+        let py_ok = Self::python_ready();
         let soul_ok = Self::soul_installed();
         format!(
             "uv: {}  python{}: {}  evocli-soul: {}",
-            if uv_ok  { "✓" } else { "✗" },
+            if uv_ok { "✓" } else { "✗" },
             PYTHON_VERSION,
-            if py_ok  { "✓" } else { "✗" },
+            if py_ok { "✓" } else { "✗" },
             if soul_ok { "✓" } else { "✗" },
         )
     }

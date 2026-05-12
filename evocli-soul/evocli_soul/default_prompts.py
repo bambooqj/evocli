@@ -369,7 +369,7 @@ def build_system_prompt(
         from evocli_soul.handlers.mcp_bridge import _mcp_tools, load_mcp_config
         servers = load_mcp_config()
         if servers and _mcp_tools:
-            mcp_lines = [f"\n## 外部 MCP 工具（通过 mcp_call 调用）"]
+            mcp_lines = ["\n## 外部 MCP 工具（通过 mcp_call 调用）"]
             mcp_lines.append("已注册 MCP server 的工具列表（使用 mcp_call(tool_name=..., arguments_json=...) 调用）：")
             for key, info in list(_mcp_tools.items())[:20]:  # 最多展示20个
                 mcp_lines.append(f"- {key}: {info['description'][:80]}")

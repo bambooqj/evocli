@@ -8,10 +8,9 @@ pub mod git_cmd;
 pub mod index_cmd;
 pub mod jobs_cmd;
 pub mod lsp_cmd;
-pub mod mcp_cmd;       // P3-2: MCP 集成
+pub mod mcp_cmd; // P3-2: MCP 集成
 pub mod session_cmd;
 pub mod skill_cmd;
 pub mod snapshot_cmd;
 pub mod stats_cmd;
 pub mod tools_cmd;
-

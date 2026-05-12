@@ -93,7 +93,7 @@ async def handle_code_intel_reindex(req_id: str, params: dict, send, state) -> N
     2. 通过 bridge.call 写入 Rust SQLite 索引
     符合 AGENTS.md: 所有操作必须通过 bridge，禁止 subprocess/os.system。
     """
-    project = params.get("project", ".")
+    params.get("project", ".")
     files   = params.get("files", [])
 
     if not files:
@@ -119,7 +119,7 @@ async def handle_code_intel_reindex(req_id: str, params: dict, send, state) -> N
                 content = _Path(file_path).read_text(encoding="utf-8", errors="ignore")
                 analysis = analyze_file(file_path, content)
                 # 通过 bridge 写入 Rust SQLite（不使用 subprocess）
-                result = await bridge.call("code_intel.ingest_tree_sitter", {
+                await bridge.call("code_intel.ingest_tree_sitter", {
                     "file":    file_path,
                     "symbols": analysis.get("symbols", []),
                 })

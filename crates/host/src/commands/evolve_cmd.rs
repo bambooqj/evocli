@@ -36,7 +36,7 @@ pub fn run(action: EvolveAction) -> Result<()> {
 
 fn show_status() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_default();
-    let events_db  = home.join(".evocli").join("events.db");
+    let events_db = home.join(".evocli").join("events.db");
     let skills_dir = home.join(".evocli").join("skills");
     let stats_file = home.join(".evocli").join("skill_stats.json");
 
@@ -52,9 +52,14 @@ fn show_status() -> Result<()> {
         let recent: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM events WHERE created_at > datetime('now', '-7 days')",
-                [], |r| r.get(0),
-            ).unwrap_or(0);
-        println!("  📊 事件日志:     总计 {} 条 / 最近 7 天 {} 条", total, recent);
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        println!(
+            "  📊 事件日志:     总计 {} 条 / 最近 7 天 {} 条",
+            total, recent
+        );
     } else {
         println!("  📊 事件日志:     未初始化（运行 evocli 后自动创建）");
     }
@@ -62,11 +67,15 @@ fn show_status() -> Result<()> {
     // Skill statistics
     let skill_count = if skills_dir.exists() {
         std::fs::read_dir(&skills_dir)
-            .map(|d| d.filter_map(|e| e.ok()).filter(|e| {
-                e.path().extension().map_or(false, |x| x == "toml")
-            }).count())
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |x| x == "toml"))
+                    .count()
+            })
             .unwrap_or(0)
-    } else { 0 };
+    } else {
+        0
+    };
     println!("  🎯 Skill 库:      {} 个已定义", skill_count);
 
     // Circuit breaker stats
@@ -75,9 +84,14 @@ fn show_status() -> Result<()> {
         if let Ok(stats) = serde_json::from_str::<serde_json::Value>(&raw) {
             let total_skills = stats.as_object().map_or(0, |m| m.len());
             let open_circuits = stats.as_object().map_or(0, |m| {
-                m.values().filter(|v| v["circuit_open"].as_bool().unwrap_or(false)).count()
+                m.values()
+                    .filter(|v| v["circuit_open"].as_bool().unwrap_or(false))
+                    .count()
             });
-            println!("  🔌 熔断器:        {} 个 Skill 被监控，{} 个熔断", total_skills, open_circuits);
+            println!(
+                "  🔌 熔断器:        {} 个 Skill 被监控，{} 个熔断",
+                total_skills, open_circuits
+            );
         }
     }
 
@@ -117,23 +131,26 @@ fn show_patterns(_limit: usize) -> Result<()> {
 }
 
 fn show_drafts() -> Result<()> {
-    let home       = dirs::home_dir().unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_default();
     let skills_dir = home.join(".evocli").join("skills");
 
     let drafts: Vec<_> = if skills_dir.exists() {
         std::fs::read_dir(&skills_dir)
-            .map(|d| d
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |x| x == "toml"))
-                .filter(|e| {
-                    std::fs::read_to_string(e.path())
-                        .map(|c| c.contains("status = \"draft\""))
-                        .unwrap_or(false)
-                })
-                .map(|e| e.path())
-                .collect())
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |x| x == "toml"))
+                    .filter(|e| {
+                        std::fs::read_to_string(e.path())
+                            .map(|c| c.contains("status = \"draft\""))
+                            .unwrap_or(false)
+                    })
+                    .map(|e| e.path())
+                    .collect()
+            })
             .unwrap_or_default()
-    } else { vec![] };
+    } else {
+        vec![]
+    };
 
     if drafts.is_empty() {
         println!("No Skill drafts found. The Evolution Engine will generate drafts automatically.");
@@ -152,7 +169,7 @@ fn trigger_scan() -> Result<()> {
     let db_path = crate::job_queue::jobs_db_path();
     let q = crate::job_queue::JobQueue::new(&db_path)?;
     let cwd = std::env::current_dir()?;
-    let id  = q.push(crate::job_queue::JobType::EvolutionScan {
+    let id = q.push(crate::job_queue::JobType::EvolutionScan {
         project: cwd.to_string_lossy().to_string(),
     })?;
     println!("✅ Evolution scan queued: {}", &id[..8.min(id.len())]);
@@ -171,7 +188,7 @@ fn show_circuit_status() -> Result<()> {
         return Ok(());
     }
 
-    let raw   = std::fs::read_to_string(&stats_file)?;
+    let raw = std::fs::read_to_string(&stats_file)?;
     let stats: serde_json::Value = serde_json::from_str(&raw)?;
 
     if let Some(map) = stats.as_object() {
@@ -179,23 +196,37 @@ fn show_circuit_status() -> Result<()> {
             println!("No skills tracked yet.");
             return Ok(());
         }
-        println!("{:<30} {:<12} {:<12} {}", "Skill ID", "Circuit", "Fail Rate", "Consecutive");
+        println!(
+            "{:<30} {:<12} {:<12} {}",
+            "Skill ID", "Circuit", "Fail Rate", "Consecutive"
+        );
         println!("{}", "─".repeat(70));
         for (skill_id, data) in map {
-            let open       = data["circuit_open"].as_bool().unwrap_or(false);
-            let consec     = data["consecutive_fail"].as_u64().unwrap_or(0);
+            let open = data["circuit_open"].as_bool().unwrap_or(false);
+            let consec = data["consecutive_fail"].as_u64().unwrap_or(0);
             let executions = data["executions"].as_array().map(|a| a.len()).unwrap_or(0);
-            let failures   = data["executions"].as_array().map(|a| {
-                a.iter().filter(|e| !e["ok"].as_bool().unwrap_or(true)).count()
-            }).unwrap_or(0);
-            let fail_rate  = if executions > 0 { failures * 100 / executions } else { 0 };
+            let failures = data["executions"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|e| !e["ok"].as_bool().unwrap_or(true))
+                        .count()
+                })
+                .unwrap_or(0);
+            let fail_rate = if executions > 0 {
+                failures * 100 / executions
+            } else {
+                0
+            };
             // Use char-based truncation for skill_id (may contain non-ASCII names)
             let skill_display: String = skill_id.chars().take(30).collect();
-            println!("{:<30} {:<12} {:<12} {}",
+            println!(
+                "{:<30} {:<12} {:<12} {}",
                 skill_display,
                 if open { "OPEN 🔴" } else { "CLOSED ✅" },
                 format!("{}%", fail_rate),
-                consec);
+                consec
+            );
         }
     }
     Ok(())

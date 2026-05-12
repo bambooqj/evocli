@@ -154,7 +154,7 @@ async def handle_evolution_transfer(req_id: str, params: dict, send, state) -> N
       dry_run:        bool  只分析不执行（default True）
       min_confidence: float 最低置信度（default 0.65）
     """
-    project_id     = params.get("project_id", ".")
+    params.get("project_id", ".")
     dry_run        = params.get("dry_run", True)
     min_confidence = float(params.get("min_confidence", 0.65))
     try:

@@ -5,8 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import AsyncGenerator
 
 log = logging.getLogger("evocli.agent")
 
@@ -42,7 +41,7 @@ def _check_api_key(provider: str) -> None:
         raise _ApiKeyMissingError(provider, env_var)
 
 # 导入生产级提示词库（替代原始 6 行 _SYSTEM_TEMPLATE）
-from evocli_soul.default_prompts import build_system_prompt, COMPACT_SYSTEM_PROMPT
+from evocli_soul.default_prompts import build_system_prompt
 
 # 向后兼容：保留 _SYSTEM_TEMPLATE 作为简化入口
 def _SYSTEM_TEMPLATE_fn(constraints: str = "（无）", goal: str = "", read_only: bool = False) -> str:
@@ -1233,7 +1232,7 @@ class EvoCLIAgent:
             # 之前只记录工具名；现在加上 params，使 FlowMiner 能重建序列
             _st.append_session_event({
                 "type":   "tool_called",
-                "method": _TOOL_TO_RPC.get(name, (name, None))[0] if name in _TOOL_TO_RPC else name,
+                "method": self._TOOL_TO_RPC.get(name, (name, None))[0] if name in self._TOOL_TO_RPC else name,
                 "tool":   name,
                 "params": {k: v for k, v in args.items() if k not in ("content", "diff", "edits_json")},  # 不存大内容
                 "session_id": self._session_id,
@@ -2058,7 +2057,6 @@ class EvoCLIAgent:
     async def _run_litellm(self, user_input: str, ctx: dict,
                            prior_history: list[dict] | None = None) -> str:
         """Raw LiteLLM fallback with tool calling loop."""
-        import litellm
         from evocli_soul.llm_client import LLMClient
         
         llm = LLMClient(self.config)
@@ -2159,7 +2157,7 @@ class EvoCLIAgent:
                 # Emit progress so user sees which tool is running (prevents silent spinning)
                 try:
                     from evocli_soul.rpc import emit_event as _progress_ev
-                    _tool_display = _describe_tool_call(tc.function.name, targs)
+                    _tool_display = _tool_display_name(tc.function.name, targs)
                     await _progress_ev("soul_status", {
                         "status":  "loading",
                         "message": f"🔧 {_tool_display}",
@@ -2610,7 +2608,7 @@ class EvoCLIAgent:
         for tool in tools:
             name = tool.get("name", "").replace("-", "_").replace(".", "_")
             cmd  = tool.get("cmd", "")
-            desc = tool.get("description", f"Run: {cmd}")
+            tool.get("description", f"Run: {cmd}")
             tool_key = f"user_{name}"
             if tool_key in self._TOOL_TO_RPC:
                 continue  # 已注册

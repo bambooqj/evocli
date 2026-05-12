@@ -6,9 +6,13 @@ use tui_textarea::TextArea;
 use crate::app::{App, AppState, ChatMessage};
 
 fn fmt_k(n: usize) -> String {
-    if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
-    else if n >= 1_000 { format!("{:.1}k", n as f64 / 1_000.0) }
-    else { n.to_string() }
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Actions that the main loop should take after handling a key event
@@ -59,7 +63,9 @@ pub fn handle_key_event(
     if matches!(app.state, AppState::WaitingApproval { .. }) {
         return match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => EventAction::ApprovalResponse(true),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => EventAction::ApprovalResponse(false),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                EventAction::ApprovalResponse(false)
+            }
             _ => EventAction::None,
         };
     }
@@ -72,7 +78,8 @@ pub fn handle_key_event(
         ref mut custom_input,
         ref mut custom_mode,
         ..
-    } = app.state {
+    } = app.state
+    {
         let opt_count = options.len();
 
         if *custom_mode {
@@ -100,9 +107,7 @@ pub fn handle_key_event(
 
         // Option list navigation
         return match key.code {
-            KeyCode::Esc => {
-                EventAction::ChoiceResponse(soul_bridge::ChoiceResult::Cancelled)
-            }
+            KeyCode::Esc => EventAction::ChoiceResponse(soul_bridge::ChoiceResult::Cancelled),
             KeyCode::Up => {
                 if opt_count > 0 {
                     *selected_idx = selected_idx.checked_sub(1).unwrap_or(opt_count - 1);
@@ -147,18 +152,38 @@ pub fn handle_key_event(
     if !matches!(app.state, AppState::Idle | AppState::Error(_)) {
         match key.code {
             // ── Scrolling (unchanged) ────────────────────────────────────
-            KeyCode::PageUp   => { app.scroll_up();      return EventAction::None; }
-            KeyCode::PageDown => { app.scroll_down();    return EventAction::None; }
-            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL)
-                          => { app.scroll_to_top();    return EventAction::None; }
-            KeyCode::End  if key.modifiers.contains(KeyModifiers::CONTROL)
-                          => { app.scroll_to_bottom(); return EventAction::None; }
-            KeyCode::Home => { app.scroll_to_top();    return EventAction::None; }
-            KeyCode::End  => { app.scroll_to_bottom(); return EventAction::None; }
-            KeyCode::Up   if key.modifiers.contains(KeyModifiers::ALT)
-                          => { app.scroll_fast_up();   return EventAction::None; }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT)
-                          => { app.scroll_fast_down(); return EventAction::None; }
+            KeyCode::PageUp => {
+                app.scroll_up();
+                return EventAction::None;
+            }
+            KeyCode::PageDown => {
+                app.scroll_down();
+                return EventAction::None;
+            }
+            KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.scroll_to_top();
+                return EventAction::None;
+            }
+            KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.scroll_to_bottom();
+                return EventAction::None;
+            }
+            KeyCode::Home => {
+                app.scroll_to_top();
+                return EventAction::None;
+            }
+            KeyCode::End => {
+                app.scroll_to_bottom();
+                return EventAction::None;
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                app.scroll_fast_up();
+                return EventAction::None;
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                app.scroll_fast_down();
+                return EventAction::None;
+            }
 
             // ── Interrupt ────────────────────────────────────────────────
             KeyCode::Esc => return EventAction::Interrupt,
@@ -166,7 +191,9 @@ pub fn handle_key_event(
             // ── Ctrl+Y: copy last AI message (works even during streaming) ──
             KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 match app.copy_last_message_to_clipboard() {
-                    Ok(n)  => app.notify(format!("✓ Copied {n} chars"), crate::app::NotifLevel::Info),
+                    Ok(n) => {
+                        app.notify(format!("✓ Copied {n} chars"), crate::app::NotifLevel::Info)
+                    }
                     Err(e) => app.notify(format!("✗ {e}"), crate::app::NotifLevel::Warn),
                 }
                 return EventAction::None;
@@ -183,7 +210,9 @@ pub fn handle_key_event(
                 }
                 let text: String = textarea.lines().join("\n");
                 let text = text.trim().to_string();
-                if text.is_empty() { return EventAction::None; }
+                if text.is_empty() {
+                    return EventAction::None;
+                }
                 *textarea = create_textarea();
                 // Show the queued message immediately in chat so the user sees it
                 app.messages.push(ChatMessage::User(text.clone()));
@@ -243,7 +272,9 @@ pub fn handle_key_event(
     match key.code {
         KeyCode::Enter => {
             // Shift+Enter 或 Alt+Enter → 在输入框中插入换行（多行输入）
-            if key.modifiers.contains(KeyModifiers::SHIFT) || key.modifiers.contains(KeyModifiers::ALT) {
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT)
+            {
                 textarea.input(crossterm::event::KeyEvent::new(
                     KeyCode::Enter,
                     KeyModifiers::NONE,
@@ -272,7 +303,8 @@ pub fn handle_key_event(
             // /help — show available commands
             if text == "/help" || text == "/?" {
                 app.messages.pop();
-                let cmds = crate::app::SLASH_COMMANDS.iter()
+                let cmds = crate::app::SLASH_COMMANDS
+                    .iter()
                     .map(|(cmd, desc)| format!("  {:<24} {}", cmd, desc))
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -302,10 +334,9 @@ To switch modes — add to ~/.evocli/config.toml:\n\
   enable_mouse = false   # native selection/copy; keyboard scroll (default)\n\
 \n\
 Slash commands:";
-                app.messages.push(ChatMessage::System(
-                    format!("{shortcuts}\n{cmds}")
-                ));
-                app.invalidate_cache();  // message list changed
+                app.messages
+                    .push(ChatMessage::System(format!("{shortcuts}\n{cmds}")));
+                app.invalidate_cache(); // message list changed
                 return EventAction::None;
             }
 
@@ -313,8 +344,9 @@ Slash commands:";
             if text == "/clear" {
                 app.messages.pop(); // remove "/clear" user message
                 app.messages.retain(|m| matches!(m, ChatMessage::System(_)));
-                app.messages.push(ChatMessage::System("Chat cleared.".into()));
-                app.invalidate_cache();  // message list changed
+                app.messages
+                    .push(ChatMessage::System("Chat cleared.".into()));
+                app.invalidate_cache(); // message list changed
                 return EventAction::None;
             }
 
@@ -335,27 +367,30 @@ Slash commands:";
                     fmt_k(app.tokens_input),
                     fmt_k(app.tokens_output),
                 )));
-                app.invalidate_cache();  // message list changed
+                app.invalidate_cache(); // message list changed
                 return EventAction::None;
             }
 
             // /log [N] — dump last N lines from log file inline
             if text == "/log" || text.starts_with("/log ") {
                 app.messages.pop();
-                let n: usize = text.strip_prefix("/log ")
+                let n: usize = text
+                    .strip_prefix("/log ")
                     .and_then(|s| s.trim().parse().ok())
                     .unwrap_or(30)
                     .clamp(1, 200);
                 app.refresh_debug_log(n);
                 if app.debug_log_lines.is_empty() {
-                    app.messages.push(ChatMessage::System(
-                        format!("Log file not found: {}", app.debug_log_path)
-                    ));
+                    app.messages.push(ChatMessage::System(format!(
+                        "Log file not found: {}",
+                        app.debug_log_path
+                    )));
                 } else {
                     let content = app.debug_log_lines.join("\n");
-                    app.messages.push(ChatMessage::System(
-                        format!("📋 Log (last {} lines from {}):\n{}", n, app.debug_log_path, content)
-                    ));
+                    app.messages.push(ChatMessage::System(format!(
+                        "📋 Log (last {} lines from {}):\n{}",
+                        n, app.debug_log_path, content
+                    )));
                 }
                 app.invalidate_cache();
                 return EventAction::None;
@@ -367,27 +402,42 @@ Slash commands:";
         }
 
         // 滚动快捷键（Idle 状态）
-        KeyCode::PageUp   => { app.scroll_up();     EventAction::None }
-        KeyCode::PageDown => { app.scroll_down();   EventAction::None }
+        KeyCode::PageUp => {
+            app.scroll_up();
+            EventAction::None
+        }
+        KeyCode::PageDown => {
+            app.scroll_down();
+            EventAction::None
+        }
 
         // Ctrl+Home / Home → 滚动到顶部（查看历史消息）
-        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL)
-                      => { app.scroll_to_top();    EventAction::None }
+        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_to_top();
+            EventAction::None
+        }
         // Ctrl+End / End → 滚动到底部（最新消息）
-        KeyCode::End  if key.modifiers.contains(KeyModifiers::CONTROL)
-                      => { app.scroll_to_bottom(); EventAction::None }
+        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_to_bottom();
+            EventAction::None
+        }
 
         // Alt+Up / Alt+Down → 快速滚动（5行）
-        KeyCode::Up   if key.modifiers.contains(KeyModifiers::ALT)
-                      => { app.scroll_fast_up();   EventAction::None }
-        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT)
-                      => { app.scroll_fast_down(); EventAction::None }
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.scroll_fast_up();
+            EventAction::None
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.scroll_fast_down();
+            EventAction::None
+        }
 
         // Ctrl+L → 清屏（等同于 /clear）
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.messages.retain(|m| matches!(m, ChatMessage::System(_)));
-            app.messages.push(ChatMessage::System("Screen cleared. (Ctrl+L)".into()));
-            app.invalidate_cache();  // message list changed
+            app.messages
+                .push(ChatMessage::System("Screen cleared. (Ctrl+L)".into()));
+            app.invalidate_cache(); // message list changed
             EventAction::None
         }
 
@@ -403,10 +453,7 @@ Slash commands:";
                     );
                 }
                 Err(e) => {
-                    app.notify(
-                        format!("✗ {e}"),
-                        crate::app::NotifLevel::Warn,
-                    );
+                    app.notify(format!("✗ {e}"), crate::app::NotifLevel::Warn);
                 }
             }
             EventAction::None
@@ -431,8 +478,11 @@ Slash commands:";
 /// 根据 AppState + 队列长度更新输入框的边框样式和标题
 /// 关键：只在状态转换时调用（非每帧），避免打断用户输入
 pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, queued: usize) {
-    use ratatui::{style::{Style, Color, Modifier}, text::Span,
-                  widgets::{Block, Borders, BorderType}};
+    use ratatui::{
+        style::{Color, Modifier, Style},
+        text::Span,
+        widgets::{Block, BorderType, Borders},
+    };
 
     let queue_hint = if queued == 0 {
         String::new()
@@ -480,9 +530,11 @@ pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, que
             .style(Style::default().bg(Color::Rgb(30, 32, 48))),
     );
     textarea.set_cursor_line_style(Style::default());
-    textarea.set_cursor_style(Style::default()
-        .fg(Color::Rgb(198, 160, 246))
-        .add_modifier(Modifier::REVERSED));
+    textarea.set_cursor_style(
+        Style::default()
+            .fg(Color::Rgb(198, 160, 246))
+            .add_modifier(Modifier::REVERSED),
+    );
 }
 
 /// 创建带现代样式的输入 textarea (Gemini CLI 风格 — 实心背景色)
@@ -497,18 +549,24 @@ pub fn create_textarea_for_width(width: u16) -> TextArea<'static> {
     apply_input_style(&mut textarea, &AppState::Idle, 0);
     // 窄屏时调整标题
     if width < 90 {
-        use ratatui::{style::{Style, Color}, text::Span,
-                      widgets::{Block, Borders, BorderType}};
+        use ratatui::{
+            style::{Color, Style},
+            text::Span,
+            widgets::{Block, BorderType, Borders},
+        };
         let title = match width {
             w if w >= 60 => " ❯  Message  (Enter:send · S+Enter:wrap · Tab:cmd) ",
             w if w >= 40 => " ❯  Input  (Enter · Tab) ",
-            _            => " ❯  Input ",
+            _ => " ❯  Input ",
         };
         textarea.set_block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title(Span::styled(title, Style::default().fg(Color::Rgb(138, 173, 244))))
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(Color::Rgb(138, 173, 244)),
+                ))
                 .border_style(Style::default().fg(Color::Rgb(138, 173, 244)))
                 .style(Style::default().bg(Color::Rgb(30, 32, 48))),
         );

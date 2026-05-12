@@ -1,4 +1,4 @@
-﻿//! MemRouter — Self-training memory write decision classifier
+//! MemRouter — Self-training memory write decision classifier
 //!
 //! ## 三阶段 + 零样本架构
 //!
@@ -26,14 +26,14 @@
 //!   可批量预计算，速度快得多。
 //!   Phase 2 微调后的 reranker 单次前向传播即可，不再需要6次。
 
-pub mod labeler;
-pub mod trainer;
 pub mod classifier;
 pub mod embedder;
+pub mod labeler;
+pub mod trainer;
 
-pub use labeler::{TrainingStore, LabeledSample};
+pub use classifier::{ClassifyResult, MemRouterClassifier};
+pub use labeler::{LabeledSample, TrainingStore};
 pub use trainer::ModelTrainer;
-pub use classifier::{MemRouterClassifier, ClassifyResult};
 
 // ── 阈值配置 ────────────────────────────────────────────────────────────────
 
@@ -80,12 +80,12 @@ pub const CLASS_DESCRIPTIONS: &[&str] = &[
 /// 记忆类型标签
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MemoryLabel {
-    Constraint,   // 约束/规则
-    Preference,   // 用户偏好
-    Semantic,     // 语义事实
-    Procedural,   // 程序技能
-    Episodic,     // 情节事件
-    NoWrite,      // 不值得写入
+    Constraint, // 约束/规则
+    Preference, // 用户偏好
+    Semantic,   // 语义事实
+    Procedural, // 程序技能
+    Episodic,   // 情节事件
+    NoWrite,    // 不值得写入
 }
 
 impl MemoryLabel {
@@ -93,10 +93,10 @@ impl MemoryLabel {
         match self {
             Self::Constraint => 0,
             Self::Preference => 1,
-            Self::Semantic   => 2,
+            Self::Semantic => 2,
             Self::Procedural => 3,
-            Self::Episodic   => 4,
-            Self::NoWrite    => 5,
+            Self::Episodic => 4,
+            Self::NoWrite => 5,
         }
     }
     pub fn from_idx(idx: usize) -> Self {
@@ -109,16 +109,20 @@ impl MemoryLabel {
             _ => Self::NoWrite,
         }
     }
-    pub fn num_classes() -> usize { 6 }
-    pub fn should_write(&self) -> bool { !matches!(self, Self::NoWrite) }
+    pub fn num_classes() -> usize {
+        6
+    }
+    pub fn should_write(&self) -> bool {
+        !matches!(self, Self::NoWrite)
+    }
     pub fn importance(&self) -> f32 {
         match self {
             Self::Constraint => 1.0,
             Self::Preference => 0.85,
-            Self::Semantic   => 0.70,
+            Self::Semantic => 0.70,
             Self::Procedural => 0.80,
-            Self::Episodic   => 0.50,
-            Self::NoWrite    => 0.0,
+            Self::Episodic => 0.50,
+            Self::NoWrite => 0.0,
         }
     }
     /// 类别描述 (用于 bge-reranker-large 零样本分类)
@@ -132,10 +136,10 @@ impl std::fmt::Display for MemoryLabel {
         let s = match self {
             Self::Constraint => "constraint",
             Self::Preference => "preference",
-            Self::Semantic   => "semantic",
+            Self::Semantic => "semantic",
             Self::Procedural => "procedural",
-            Self::Episodic   => "episodic",
-            Self::NoWrite    => "no_write",
+            Self::Episodic => "episodic",
+            Self::NoWrite => "no_write",
         };
         write!(f, "{}", s)
     }

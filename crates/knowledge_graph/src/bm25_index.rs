@@ -12,33 +12,33 @@ use std::path::{Path, PathBuf};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
-use tantivy::{Index, IndexWriter, TantivyDocument, doc};
+use tantivy::{doc, Index, IndexWriter, TantivyDocument};
 
 /// BM25 搜索结果
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Bm25Result {
-    pub symbol_id:  String,
-    pub name:       String,
-    pub kind:       String,
-    pub file:       String,
-    pub signature:  String,
-    pub score:      f32,
-    pub rank:       usize,   // for RRF merging
+    pub symbol_id: String,
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub signature: String,
+    pub score: f32,
+    pub rank: usize, // for RRF merging
 }
 
 /// Tantivy BM25 index for code symbols
 pub struct Bm25Index {
     /// Path to the index directory — used for the mtime stamp file.
-    index_dir:  PathBuf,
-    index:      Index,
+    index_dir: PathBuf,
+    index: Index,
     /// schema is retained for add_document operations (not read directly)
     #[allow(dead_code)]
-    schema:     Schema,
+    schema: Schema,
     // field handles
-    f_id:       Field,
-    f_name:     Field,
-    f_kind:     Field,
-    f_file:     Field,
+    f_id: Field,
+    f_name: Field,
+    f_kind: Field,
+    f_file: Field,
     f_signature: Field,
     f_fulltext: Field,
 }
@@ -51,13 +51,13 @@ impl Bm25Index {
         let mut schema_builder = Schema::builder();
 
         // Stored fields (returned in results)
-        let f_id        = schema_builder.add_text_field("id",        STRING | STORED);
-        let f_name      = schema_builder.add_text_field("name",      TEXT   | STORED);
-        let f_kind      = schema_builder.add_text_field("kind",      STRING | STORED);
-        let f_file      = schema_builder.add_text_field("file",      TEXT   | STORED);
-        let f_signature = schema_builder.add_text_field("signature", TEXT   | STORED);
+        let f_id = schema_builder.add_text_field("id", STRING | STORED);
+        let f_name = schema_builder.add_text_field("name", TEXT | STORED);
+        let f_kind = schema_builder.add_text_field("kind", STRING | STORED);
+        let f_file = schema_builder.add_text_field("file", TEXT | STORED);
+        let f_signature = schema_builder.add_text_field("signature", TEXT | STORED);
         // Full-text search field (combines name + signature + file)
-        let f_fulltext  = schema_builder.add_text_field("fulltext",  TEXT);
+        let f_fulltext = schema_builder.add_text_field("fulltext", TEXT);
 
         let schema = schema_builder.build();
 
@@ -65,11 +65,22 @@ impl Bm25Index {
             Index::open_in_dir(index_dir)
                 .with_context(|| format!("Failed to open BM25 index at {}", index_dir.display()))?
         } else {
-            Index::create_in_dir(index_dir, schema.clone())
-                .with_context(|| format!("Failed to create BM25 index at {}", index_dir.display()))?
+            Index::create_in_dir(index_dir, schema.clone()).with_context(|| {
+                format!("Failed to create BM25 index at {}", index_dir.display())
+            })?
         };
 
-        Ok(Self { index_dir: index_dir.to_path_buf(), index, schema, f_id, f_name, f_kind, f_file, f_signature, f_fulltext })
+        Ok(Self {
+            index_dir: index_dir.to_path_buf(),
+            index,
+            schema,
+            f_id,
+            f_name,
+            f_kind,
+            f_file,
+            f_signature,
+            f_fulltext,
+        })
     }
 
     /// Build or rebuild the index from SQLite symbol data.
@@ -77,22 +88,21 @@ impl Bm25Index {
     pub fn rebuild_from_sqlite(&self, db_path: &Path) -> Result<usize> {
         let conn = rusqlite::Connection::open(db_path)?;
 
-        let mut writer: IndexWriter = self.index.writer(50_000_000)?;  // 50MB heap
+        let mut writer: IndexWriter = self.index.writer(50_000_000)?; // 50MB heap
         writer.delete_all_documents()?;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, name, kind, file, signature, language FROM symbols"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, kind, file, signature, language FROM symbols")?;
 
         let mut count = 0usize;
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,  // id
-                row.get::<_, String>(1)?,  // name
-                row.get::<_, String>(2)?,  // kind
-                row.get::<_, String>(3)?,  // file
-                row.get::<_, Option<String>>(4)?.unwrap_or_default(),  // signature
-                row.get::<_, String>(5)?,  // language
+                row.get::<_, String>(0)?,                             // id
+                row.get::<_, String>(1)?,                             // name
+                row.get::<_, String>(2)?,                             // kind
+                row.get::<_, String>(3)?,                             // file
+                row.get::<_, Option<String>>(4)?.unwrap_or_default(), // signature
+                row.get::<_, String>(5)?,                             // language
             ))
         })?;
 
@@ -127,9 +137,7 @@ impl Bm25Index {
     pub fn rebuild_from_sqlite_if_changed(&self, db_path: &Path) -> Result<Option<usize>> {
         let stamp_path = self.index_dir.join(".evocli_bm25_stamp");
 
-        let sqlite_mtime = std::fs::metadata(db_path)
-            .and_then(|m| m.modified())
-            .ok();
+        let sqlite_mtime = std::fs::metadata(db_path).and_then(|m| m.modified()).ok();
         let stamp_mtime = std::fs::metadata(&stamp_path)
             .and_then(|m| m.modified())
             .ok();
@@ -138,7 +146,8 @@ impl Bm25Index {
             if sql_t <= bm25_t {
                 tracing::debug!(
                     "[bm25] SQLite mtime {:?} <= stamp {:?}: skipping full rebuild",
-                    sql_t, bm25_t
+                    sql_t,
+                    bm25_t
                 );
                 return Ok(None);
             }
@@ -156,7 +165,8 @@ impl Bm25Index {
 
     /// BM25 search — returns ranked results.
     pub fn search(&self, query_str: &str, limit: usize) -> Result<Vec<Bm25Result>> {
-        let reader = self.index
+        let reader = self
+            .index
             .reader()
             .with_context(|| "Failed to open tantivy reader")?;
         let searcher = reader.searcher();
@@ -175,16 +185,16 @@ impl Bm25Index {
 
             let get = |field: Field| -> String {
                 doc.get_first(field)
-                   .and_then(|v| v.as_str())
-                   .unwrap_or("")
-                   .to_string()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
             };
 
             results.push(Bm25Result {
                 symbol_id: get(self.f_id),
-                name:      get(self.f_name),
-                kind:      get(self.f_kind),
-                file:      get(self.f_file),
+                name: get(self.f_name),
+                kind: get(self.f_kind),
+                file: get(self.f_file),
                 signature: get(self.f_signature),
                 score,
                 rank: rank + 1,

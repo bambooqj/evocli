@@ -25,7 +25,6 @@ async def handle_watch_start(req_id: str, params: dict, send, state) -> None:
         if not _WATCHFILES_AVAILABLE:
             await send.response(req_id, {"ok": False, "reason": "watchfiles not installed"})
             return
-        import asyncio
         # Stop any existing watcher before creating a new one.
         # Without this, calling watch.start twice creates an orphaned background task
         # that continues consuming resources and watching files indefinitely.

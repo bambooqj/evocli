@@ -8,8 +8,8 @@ use crate::{MemoryLabel, MIN_SAMPLES_PER_CLASS, RETRAIN_DELTA};
 
 #[derive(Debug, Clone)]
 pub struct LabeledSample {
-    pub text:       String,
-    pub label:      MemoryLabel,
+    pub text: String,
+    pub label: MemoryLabel,
     pub project_id: String,
     pub created_at: String,
 }
@@ -27,7 +27,8 @@ impl TrainingStore {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("training.db");
         let conn = Connection::open(&path)?;
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE IF NOT EXISTS labeled_samples (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 text       TEXT NOT NULL,
@@ -43,7 +44,8 @@ impl TrainingStore {
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-        "#)?;
+        "#,
+        )?;
         Ok(Self { conn, path })
     }
 
@@ -69,25 +71,32 @@ impl TrainingStore {
     /// Total number of labeled samples
     pub fn count(&self) -> usize {
         self.conn
-            .query_row("SELECT COUNT(*) FROM labeled_samples", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM labeled_samples", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize
     }
 
     /// Count per class
     pub fn count_per_class(&self) -> [usize; 6] {
         let mut counts = [0usize; 6];
-        let mut stmt = self.conn
+        let mut stmt = self
+            .conn
             .prepare("SELECT label, COUNT(*) FROM labeled_samples GROUP BY label")
             .unwrap();
-        let _ = stmt.query_map([], |r| {
-            let idx: usize = r.get::<_, i64>(0)? as usize;
-            let cnt: i64   = r.get(1)?;
-            Ok((idx, cnt as usize))
-        }).map(|rows| {
-            for row in rows.flatten() {
-                if row.0 < 6 { counts[row.0] = row.1; }
-            }
-        });
+        let _ = stmt
+            .query_map([], |r| {
+                let idx: usize = r.get::<_, i64>(0)? as usize;
+                let cnt: i64 = r.get(1)?;
+                Ok((idx, cnt as usize))
+            })
+            .map(|rows| {
+                for row in rows.flatten() {
+                    if row.0 < 6 {
+                        counts[row.0] = row.1;
+                    }
+                }
+            });
         counts
     }
 
@@ -96,14 +105,18 @@ impl TrainingStore {
         let counts = self.count_per_class();
         // Allow training if at least 4 of 6 classes have enough data
         // (NoWrite might be rare, Constraint might also be rare early on)
-        let sufficient = counts.iter().filter(|&&c| c >= MIN_SAMPLES_PER_CLASS).count();
+        let sufficient = counts
+            .iter()
+            .filter(|&&c| c >= MIN_SAMPLES_PER_CLASS)
+            .count();
         sufficient >= 4
     }
 
     /// Check if we should retrain (delta since last training)
     pub fn should_retrain(&self) -> bool {
         let total = self.count();
-        let last_trained = self.get_meta("last_trained_count")
+        let last_trained = self
+            .get_meta("last_trained_count")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
         total >= last_trained + RETRAIN_DELTA && self.ready_to_train()
@@ -111,9 +124,9 @@ impl TrainingStore {
 
     /// Load all samples for training
     pub fn load_all(&self) -> Result<Vec<(String, usize)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT text, label FROM labeled_samples ORDER BY id"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT text, label FROM labeled_samples ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
         })?;
@@ -130,9 +143,15 @@ impl TrainingStore {
 
     pub fn get_meta(&self, key: &str) -> Option<String> {
         self.conn
-            .query_row("SELECT value FROM model_meta WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM model_meta WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .ok()
     }
 
-    pub fn db_path(&self) -> &Path { &self.path }
+    pub fn db_path(&self) -> &Path {
+        &self.path
+    }
 }

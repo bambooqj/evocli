@@ -14,7 +14,7 @@ mod job_queue;
 mod keystore;
 mod logging;
 
-mod python_manager;   // v3.x: uv 自管理 Python 运行时
+mod python_manager; // v3.x: uv 自管理 Python 运行时
 mod security;
 mod tool_dispatch;
 mod web_tools;
@@ -28,12 +28,12 @@ use commands::{
     debug_cmd::DebugAction,
     evolve_cmd::EvolveAction,
     git_cmd::GitAction,
+    jobs_cmd::JobsAction,
     lsp_cmd::LspAction,
-    mcp_cmd::McpAction,        // P3-2
+    mcp_cmd::McpAction, // P3-2
     session_cmd::SessionAction,
     skill_cmd::SkillAction,
     snapshot_cmd::SnapshotAction,
-    jobs_cmd::JobsAction,
     tools_cmd::ToolsAction,
 };
 
@@ -52,40 +52,79 @@ enum Commands {
     /// Initialize EvoCLI (select provider, set API key)
     Init,
     /// Configuration management (show / edit / explain / set)
-    Config   { #[command(subcommand)] action: ConfigAction },
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Manage skills
-    Skill    { #[command(subcommand)] action: SkillAction },
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
     /// Git operations
-    Git      { #[command(subcommand)] action: GitAction },
+    Git {
+        #[command(subcommand)]
+        action: GitAction,
+    },
     /// Index source code symbols
-    Index    { #[arg(short, long)] dir: Option<String> },
+    Index {
+        #[arg(short, long)]
+        dir: Option<String>,
+    },
     /// LSP-powered code intelligence
-    Lsp      { #[command(subcommand)] action: LspAction },
+    Lsp {
+        #[command(subcommand)]
+        action: LspAction,
+    },
     /// Manage L1 constraint rules (Section 6.2)
-    Constraint { #[command(subcommand)] action: ConstraintAction },
+    Constraint {
+        #[command(subcommand)]
+        action: ConstraintAction,
+    },
     /// Evolution flywheel dashboard (Section 9.5)
-    Evolve     { #[command(subcommand)] action: EvolveAction },
+    Evolve {
+        #[command(subcommand)]
+        action: EvolveAction,
+    },
     /// System health check (7 checks)
     Doctor,
     /// Session management (save / resume / list)
-    Session  { #[command(subcommand)] action: SessionAction },
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Workspace snapshot management (side-git, never touches project .git)
-    Snapshot { #[command(subcommand)] action: SnapshotAction },
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
     /// Background job queue management (Section 28)
-    Jobs     { #[command(subcommand)] action: JobsAction },
+    Jobs {
+        #[command(subcommand)]
+        action: JobsAction,
+    },
     /// Debug diagnostics (dump, events, trace) — Section 25
-    Debug    { #[command(subcommand)] action: DebugAction },
+    Debug {
+        #[command(subcommand)]
+        action: DebugAction,
+    },
     /// Manage user-registered tools discoverable by LLM (G-09)
-    Tool     { #[command(subcommand)] action: ToolsAction },
+    Tool {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
     /// Project stats — flywheel metrics dashboard (v2.3)
     Stats,
     /// MCP (Model Context Protocol) server management (P3-2)
-    Mcp      { #[command(subcommand)] action: McpAction },
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
 }
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli      = Cli::parse();
-    let _guard   = logging::init(cli.debug)?;
+    let cli = Cli::parse();
+    let _guard = logging::init(cli.debug)?;
 
     // ── 环境自检：任何命令运行前确保 Python 环境就绪 ─────────────────────────
     // 原来只在 TUI 启动时检查，导致 evocli doctor/skill/index 等子命令跳过安装
@@ -96,23 +135,23 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Some(Commands::Init)                  => init::run_init().await?,
-        Some(Commands::Config  { action })    => commands::config_cmd::run(action)?,
+        Some(Commands::Init) => init::run_init().await?,
+        Some(Commands::Config { action }) => commands::config_cmd::run(action)?,
         Some(Commands::Constraint { action }) => commands::constraint_cmd::run(action)?,
-        Some(Commands::Evolve     { action }) => commands::evolve_cmd::run(action)?,
-        Some(Commands::Doctor)               => commands::doctor_cmd::run()?,
-        Some(Commands::Skill    { action })  => commands::skill_cmd::run(action).await?,
-        Some(Commands::Git      { action })  => commands::git_cmd::run(action)?,
-        Some(Commands::Index    { dir    })  => commands::index_cmd::run(dir.as_deref())?,
-        Some(Commands::Lsp      { action })  => commands::lsp_cmd::run(action).await?,
-        Some(Commands::Session  { action })  => commands::session_cmd::run(action)?,
-        Some(Commands::Snapshot { action })  => commands::snapshot_cmd::run(action)?,
-        Some(Commands::Jobs    { action })  => commands::jobs_cmd::run(action)?,
-        Some(Commands::Debug   { action })  => commands::debug_cmd::run(action)?,
-        Some(Commands::Tool    { action })  => commands::tools_cmd::run(action)?,
-        Some(Commands::Stats)               => commands::stats_cmd::run()?,
-        Some(Commands::Mcp     { action })  => commands::mcp_cmd::run(action)?,
-        None                                 => run_tui(cli.debug).await?,
+        Some(Commands::Evolve { action }) => commands::evolve_cmd::run(action)?,
+        Some(Commands::Doctor) => commands::doctor_cmd::run()?,
+        Some(Commands::Skill { action }) => commands::skill_cmd::run(action).await?,
+        Some(Commands::Git { action }) => commands::git_cmd::run(action)?,
+        Some(Commands::Index { dir }) => commands::index_cmd::run(dir.as_deref())?,
+        Some(Commands::Lsp { action }) => commands::lsp_cmd::run(action).await?,
+        Some(Commands::Session { action }) => commands::session_cmd::run(action)?,
+        Some(Commands::Snapshot { action }) => commands::snapshot_cmd::run(action)?,
+        Some(Commands::Jobs { action }) => commands::jobs_cmd::run(action)?,
+        Some(Commands::Debug { action }) => commands::debug_cmd::run(action)?,
+        Some(Commands::Tool { action }) => commands::tools_cmd::run(action)?,
+        Some(Commands::Stats) => commands::stats_cmd::run()?,
+        Some(Commands::Mcp { action }) => commands::mcp_cmd::run(action)?,
+        None => run_tui(cli.debug).await?,
     }
     Ok(())
 }
@@ -122,7 +161,9 @@ fn ensure_python_env_ready() {
     let needs_setup = !python_manager::PythonManager::python_ready()
         || !python_manager::PythonManager::full_extras_installed();
 
-    if !needs_setup { return; }
+    if !needs_setup {
+        return;
+    }
 
     println!("EvoCLI v{}", env!("CARGO_PKG_VERSION"));
     println!();
@@ -135,10 +176,17 @@ fn ensure_python_env_ready() {
 
     let soul_src_exe = find_soul_dir_relative_to_exe();
     let soul_src_cwd = std::path::PathBuf::from("evocli-soul");
-    let soul_arg: Option<&std::path::Path> = soul_src_exe.as_ref()
+    let soul_arg: Option<&std::path::Path> = soul_src_exe
+        .as_ref()
         .filter(|p| p.exists())
         .map(|p| p.as_path())
-        .or_else(|| if soul_src_cwd.exists() { Some(&soul_src_cwd) } else { None });
+        .or_else(|| {
+            if soul_src_cwd.exists() {
+                Some(&soul_src_cwd)
+            } else {
+                None
+            }
+        });
 
     match python_manager::PythonManager::setup(soul_arg) {
         Ok(py) => {
@@ -147,8 +195,7 @@ fn ensure_python_env_ready() {
         }
         Err(e) => {
             // Clear marker so next run retries
-            let marker = python_manager::PythonManager::venv_dir()
-                .join(".evocli_full_installed");
+            let marker = python_manager::PythonManager::venv_dir().join(".evocli_full_installed");
             let _ = std::fs::remove_file(&marker);
 
             eprintln!("  ✗ Setup failed: {}", e);
@@ -165,14 +212,18 @@ async fn run_tui(_debug: bool) -> Result<()> {
     let cfg = std::sync::Arc::new(config::Config::load_or_default().unwrap_or_default());
 
     // P2-1: 检查是否有待恢复的 session
-    let resume_session = std::env::var("EVOCLI_RESUME_SESSION").ok()
+    let resume_session = std::env::var("EVOCLI_RESUME_SESSION")
+        .ok()
         .filter(|s| !s.is_empty());
 
     // ensure_python_env_ready() already called from main() before dispatch.
     // No duplicate setup check needed here.
 
     println!("EvoCLI v{}", env!("CARGO_PKG_VERSION"));
-    println!("  Endpoint: {}", cfg.llm.base_url.as_deref().unwrap_or("(auto)"));
+    println!(
+        "  Endpoint: {}",
+        cfg.llm.base_url.as_deref().unwrap_or("(auto)")
+    );
     println!("  Fast:     {}", cfg.llm.tiers.fast);
     println!("  Smart:    {}", cfg.llm.tiers.smart);
     println!("  Soul:     {}", soul_path);
@@ -183,7 +234,7 @@ async fn run_tui(_debug: bool) -> Result<()> {
 
     let bridge = soul_bridge::SoulBridge::spawn(&soul_path).await?;
     match bridge.ping().await {
-        Ok(true)  => println!("  Soul connected ✓"),
+        Ok(true) => println!("  Soul connected ✓"),
         Ok(false) => {
             // Soul responded but returned something other than "pong" — fatal.
             // Starting the TUI in this state means all agent.stream calls will fail
@@ -230,17 +281,17 @@ async fn run_tui(_debug: bool) -> Result<()> {
             // 取出当前队列中全部待处理工具调用
             while let Some(req) = bridge_dispatch.next_tool_call().await {
                 dispatched += 1;
-                let id        = req.id.clone();
+                let id = req.id.clone();
                 let tool_name = req.tool.clone();
-                let bridge_c  = std::sync::Arc::clone(&bridge_dispatch);
-                let cfg_c     = std::sync::Arc::clone(&cfg_dispatch);
-                let sid_c     = session_id_dispatch.clone();
+                let bridge_c = std::sync::Arc::clone(&bridge_dispatch);
+                let cfg_c = std::sync::Arc::clone(&cfg_dispatch);
+                let sid_c = session_id_dispatch.clone();
 
                 // 每个工具调用独立 spawn — 并行执行，互不阻塞
                 tokio::spawn(async move {
                     let event_bus = event_bus::EventBus::new();
-                    let result    = tool_dispatch::dispatch(&req, Some(&*bridge_c), &cfg_c).await;
-                    let ok        = result.is_ok();
+                    let result = tool_dispatch::dispatch(&req, Some(&*bridge_c), &cfg_c).await;
+                    let ok = result.is_ok();
 
                     event_bus.tool_called(&sid_c, &tool_name, ok);
                     if !ok {
@@ -274,68 +325,108 @@ async fn run_tui(_debug: bool) -> Result<()> {
             let maybe_job = tokio::task::spawn_blocking(move || {
                 let q = job_queue::JobQueue::new(&db_p)?;
                 q.pop_next_pending()
-            }).await;
+            })
+            .await;
 
             let maybe_job = match maybe_job {
                 Ok(Ok(j)) => j,
-                Ok(Err(e)) => { tracing::debug!("Job queue poll error: {e}"); continue; }
-                Err(e) => { tracing::debug!("Job queue spawn error: {e}"); continue; }
+                Ok(Err(e)) => {
+                    tracing::debug!("Job queue poll error: {e}");
+                    continue;
+                }
+                Err(e) => {
+                    tracing::debug!("Job queue spawn error: {e}");
+                    continue;
+                }
             };
 
             if let Some(job) = maybe_job {
-                    tracing::info!("Processing job: {} ({:?})", job.id, job.job_type);
-                     let (method, params, timeout_ms) = match &job.job_type {
-                         job_queue::JobType::MemoryDistill { session_id } =>
-                             ("memory.distill",
-                              serde_json::json!({"session_id": session_id, "events": []}),
-                              60_000u64),
-                         job_queue::JobType::CodeIndexUpdate { project, changed_files } =>
-                             ("code_intel.reindex",
-                              serde_json::json!({"project": project, "files": changed_files}),
-                              120_000u64),
-                         job_queue::JobType::SkillRun { skill_id, project, dry_run } =>
-                             ("skill.run",
-                              serde_json::json!({"id": skill_id, "project": project, "dry_run": dry_run}),
-                              60_000u64),
-                         job_queue::JobType::EvolutionScan { project } =>
-                             ("evolution.observe",
-                              serde_json::json!({"project": project, "events": []}),
-                              60_000u64),
-                         job_queue::JobType::AgentSession { session_id, graph_id, parent_id, task_prompt } =>
-                             ("agent.run",
-                              serde_json::json!({
-                                  "session_id": session_id,
-                                  "graph_id":   graph_id,
-                                  "parent_id":  parent_id,
-                                  "prompt":     task_prompt,
-                              }),
-                              300_000u64),   // 5 分钟：复杂 Agent 任务可能需要多轮 LLM + 工具调用
-                     };
-                    let result = bridge_jobs.call_with_timeout(method, params, timeout_ms).await;
-                    match result {
-                        Ok(_) => {
-                            let db_p = db_path.clone();
-                            let jid = job.id.clone();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if let Ok(q) = job_queue::JobQueue::new(&db_p) { let _ = q.mark_done(&jid); }
-                            }).await;
-                            tracing::info!("Job {} done", job.id);
-                        }
-                        Err(e) => {
-                            let db_p = db_path.clone();
-                            let jid = job.id.clone();
-                            let err_msg = e.to_string();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if let Ok(q) = job_queue::JobQueue::new(&db_p) { let _ = q.mark_failed(&jid, &err_msg); }
-                            }).await;
-                            tracing::warn!("Job {} failed: {e}", job.id);
-                        }
+                tracing::info!("Processing job: {} ({:?})", job.id, job.job_type);
+                let (method, params, timeout_ms) = match &job.job_type {
+                    job_queue::JobType::MemoryDistill { session_id } => (
+                        "memory.distill",
+                        serde_json::json!({"session_id": session_id, "events": []}),
+                        60_000u64,
+                    ),
+                    job_queue::JobType::CodeIndexUpdate {
+                        project,
+                        changed_files,
+                    } => (
+                        "code_intel.reindex",
+                        serde_json::json!({"project": project, "files": changed_files}),
+                        120_000u64,
+                    ),
+                    job_queue::JobType::SkillRun {
+                        skill_id,
+                        project,
+                        dry_run,
+                    } => (
+                        "skill.run",
+                        serde_json::json!({"id": skill_id, "project": project, "dry_run": dry_run}),
+                        60_000u64,
+                    ),
+                    job_queue::JobType::EvolutionScan { project } => (
+                        "evolution.observe",
+                        serde_json::json!({"project": project, "events": []}),
+                        60_000u64,
+                    ),
+                    job_queue::JobType::AgentSession {
+                        session_id,
+                        graph_id,
+                        parent_id,
+                        task_prompt,
+                    } => (
+                        "agent.run",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "graph_id":   graph_id,
+                            "parent_id":  parent_id,
+                            "prompt":     task_prompt,
+                        }),
+                        300_000u64,
+                    ), // 5 分钟：复杂 Agent 任务可能需要多轮 LLM + 工具调用
+                };
+                let result = bridge_jobs
+                    .call_with_timeout(method, params, timeout_ms)
+                    .await;
+                match result {
+                    Ok(_) => {
+                        let db_p = db_path.clone();
+                        let jid = job.id.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            if let Ok(q) = job_queue::JobQueue::new(&db_p) {
+                                let _ = q.mark_done(&jid);
+                            }
+                        })
+                        .await;
+                        tracing::info!("Job {} done", job.id);
                     }
+                    Err(e) => {
+                        let db_p = db_path.clone();
+                        let jid = job.id.clone();
+                        let err_msg = e.to_string();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            if let Ok(q) = job_queue::JobQueue::new(&db_p) {
+                                let _ = q.mark_failed(&jid, &err_msg);
+                            }
+                        })
+                        .await;
+                        tracing::warn!("Job {} failed: {e}", job.id);
+                    }
+                }
             }
         }
     });
 
-    evocli_tui::run(std::sync::Arc::clone(&bridge_arc), &cfg.llm.tiers.fast, resume_session.as_deref(), cfg.context.max_total, cfg.agent.first_chunk_timeout_s, cfg.tui.enable_mouse).await?;
+    evocli_tui::run(
+        std::sync::Arc::clone(&bridge_arc),
+        &cfg.llm.tiers.fast,
+        resume_session.as_deref(),
+        cfg.context.max_total,
+        cfg.agent.first_chunk_timeout_s,
+        cfg.tui.enable_mouse,
+    )
+    .await?;
     Ok(())
 }
 
@@ -354,6 +445,3 @@ pub fn find_soul_dir_relative_to_exe() -> Option<std::path::PathBuf> {
     }
     None
 }
-
-
-

@@ -12,7 +12,6 @@ GitNexus 对应: src/core/wiki/ + generate AI context files (AGENTS.md, CLAUDE.m
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Optional

@@ -11,37 +11,48 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum JobType {
-    MemoryDistill { session_id: String },
-    CodeIndexUpdate { project: String, changed_files: Vec<String> },
-    SkillRun { skill_id: String, project: String, dry_run: bool },
-    EvolutionScan { project: String },
+    MemoryDistill {
+        session_id: String,
+    },
+    CodeIndexUpdate {
+        project: String,
+        changed_files: Vec<String>,
+    },
+    SkillRun {
+        skill_id: String,
+        project: String,
+        dry_run: bool,
+    },
+    EvolutionScan {
+        project: String,
+    },
     AgentSession {
-        session_id:  String,
-        graph_id:    String,    // "planner" | "coder" | "full_orchestration" | "reviewer"
-        parent_id:   Option<String>,
+        session_id: String,
+        graph_id: String, // "planner" | "coder" | "full_orchestration" | "reviewer"
+        parent_id: Option<String>,
         task_prompt: String,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
-    pub id:          String,
-    pub job_type:    JobType,
-    pub status:      String,   // "pending" | "running" | "done" | "failed"
+    pub id: String,
+    pub job_type: JobType,
+    pub status: String, // "pending" | "running" | "done" | "failed"
     pub retry_count: u32,
     pub max_retries: u32,
-    pub created_at:  String,
-    pub updated_at:  String,
-    pub error:       Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JobSummary {
-    pub id:            String,
+    pub id: String,
     pub job_type_name: String,
-    pub status:        String,
-    pub retry_count:   u32,
-    pub created_at:    String,
+    pub status: String,
+    pub retry_count: u32,
+    pub created_at: String,
 }
 
 pub struct JobQueue {
@@ -75,9 +86,9 @@ impl JobQueue {
     }
 
     pub fn push(&self, job_type: JobType) -> Result<String> {
-        let id        = uuid::Uuid::new_v4().to_string();
+        let id = uuid::Uuid::new_v4().to_string();
         let type_json = serde_json::to_string(&job_type)?;
-        let now       = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO jobs (id, job_type, status, retry_count, max_retries, created_at, updated_at) VALUES (?1, ?2, 'pending', 0, 3, ?3, ?3)",
             rusqlite::params![id, type_json, now],
@@ -108,7 +119,8 @@ impl JobQueue {
                     row.get::<_, String>(5)?,
                     row.get::<_, Option<String>>(7)?,
                 ))
-            }).optional()?
+            })
+            .optional()?
         };
 
         match row_data {
@@ -152,13 +164,20 @@ impl JobQueue {
 
     pub fn mark_failed(&self, job_id: &str, error: &str) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let (retry_count, max_retries): (u32, u32) = self.conn.query_row(
-            "SELECT retry_count, max_retries FROM jobs WHERE id = ?1",
-            rusqlite::params![job_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap_or((0, 3));
+        let (retry_count, max_retries): (u32, u32) = self
+            .conn
+            .query_row(
+                "SELECT retry_count, max_retries FROM jobs WHERE id = ?1",
+                rusqlite::params![job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or((0, 3));
 
-        let new_status = if retry_count + 1 >= max_retries { "failed" } else { "pending" };
+        let new_status = if retry_count + 1 >= max_retries {
+            "failed"
+        } else {
+            "pending"
+        };
         self.conn.execute(
             "UPDATE jobs SET status = ?1, retry_count = retry_count + 1, error = ?2, updated_at = ?3 WHERE id = ?4",
             rusqlite::params![new_status, error, now, job_id],
@@ -173,7 +192,9 @@ impl JobQueue {
             "SELECT id, job_type, status, retry_count, created_at FROM jobs ORDER BY created_at DESC LIMIT 50"
         };
 
-        let params: Vec<String> = status_filter.map(|s| vec![s.to_string()]).unwrap_or_default();
+        let params: Vec<String> = status_filter
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default();
         let mut stmt = self.conn.prepare(query)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
@@ -205,17 +226,28 @@ impl JobQueue {
                     }
                 })
                 .unwrap_or_else(|| "Unknown".to_string());
-            jobs.push(JobSummary { id, job_type_name: type_name, status, retry_count, created_at });
+            jobs.push(JobSummary {
+                id,
+                job_type_name: type_name,
+                status,
+                retry_count,
+                created_at,
+            });
         }
         Ok(jobs)
     }
 
     pub fn clear_failed(&self) -> Result<usize> {
-        let affected = self.conn.execute("DELETE FROM jobs WHERE status = 'failed'", [])?;
+        let affected = self
+            .conn
+            .execute("DELETE FROM jobs WHERE status = 'failed'", [])?;
         Ok(affected)
     }
 }
 
 pub fn jobs_db_path() -> std::path::PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".evocli").join("jobs.db")
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".evocli")
+        .join("jobs.db")
 }

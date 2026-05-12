@@ -123,7 +123,8 @@ class TestMemoryClient:
         assert mem._store is not None
 
     def test_jsonlines_store_write_read(self):
-        import tempfile, pathlib
+        import tempfile
+        import pathlib
         from evocli_soul.memory_client import _JSONLinesStore
         with tempfile.TemporaryDirectory() as td:
             store = _JSONLinesStore(pathlib.Path(td) / "test_mem.jsonl")
@@ -183,7 +184,7 @@ class TestSkillE2E:
     @pytest.mark.asyncio
     async def test_skill_approval_callback_reject(self):
         """approval_callback 返回 False 时，执行应在该步骤停止"""
-        from evocli_soul.skill_engine import SkillEngine, SkillStep
+        from evocli_soul.skill_engine import SkillEngine
 
         async def reject_all(_skill_id, _step):
             return False
@@ -224,7 +225,8 @@ class TestSoulMainPing:
             proc.stdin.write(ping.encode("utf-8"))
             proc.stdin.flush()
 
-            import select, time
+            import select
+            import time
             start = time.time()
             response_line = ""
             while time.time() - start < 8:

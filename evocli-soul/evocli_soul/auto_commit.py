@@ -13,8 +13,6 @@ auto_commit.py — Aider 风格自动提交 + 会话 compaction RPC
 """
 from __future__ import annotations
 import logging
-from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger("evocli.auto_commit")
 
@@ -40,7 +38,7 @@ async def generate_commit_message(diff_text: str, llm_client, goal: str = "") ->
         f"Reply with ONLY the commit message, no quotes or explanation."
     )
     try:
-        msg = await llm_client.complete(prompt, tier="fast", max_tokens=80)
+        msg = await llm_client.complete_for_task("commit", prompt)
         msg = msg.strip().strip('"\'').strip()
         if not msg.startswith(("feat", "fix", "refactor", "docs", "test", "chore")):
             msg = AI_COMMIT_PREFIX + msg

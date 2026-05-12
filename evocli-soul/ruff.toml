@@ -1,0 +1,35 @@
+# ruff.toml — EvoCLI Python linting configuration
+# https://docs.astral.sh/ruff/configuration/
+
+[lint]
+# Rules enabled: default set + extras
+select = ["E", "F", "W"]
+
+ignore = [
+    # E402: Module level import not at top of file
+    "E402",
+    # E741: Ambiguous variable name (l, O, I) — pre-existing code
+    "E741",
+    # E701/E702: Multiple statements on one line — pre-existing style
+    "E701",
+    "E702",
+    # E501: Line too long — not enforcing line length, codebase has long lines throughout
+    "E501",
+    # W291/W293: Trailing whitespace
+    "W291",
+    "W293",
+]
+
+# Per-file ignores for known false positives
+[lint.per-file-ignores]
+# evolution/__init__.py exports types for external use
+"evocli_soul/evolution/__init__.py" = ["F401"]
+# workflow.py has a malformed noqa directive that's hard to fix without changing logic
+"evocli_soul/workflow.py" = ["E501"]
+# soul_updater uses l as a common local variable
+"evocli_soul/soul_updater.py" = ["E741"]
+
+[format]
+# Consistent with Black-compatible formatting
+quote-style = "double"
+indent-style = "space"

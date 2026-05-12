@@ -102,7 +102,8 @@ async def handle_agent_run(req_id: str, params: dict, send, state) -> None:
         # Load actual config so pydantic-ai uses the correct provider/model/api_key.
         # Pass session_id so agent.run reads history from the right session bucket.
         from evocli_soul.agent import EvoCLIAgent
-        import os as _os_run, hashlib as _hashlib_run
+        import os as _os_run
+        import hashlib as _hashlib_run
         _run_explicit_sid = params.get("session_id")
         if _run_explicit_sid:
             _run_session_id = _run_explicit_sid
@@ -165,7 +166,8 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
     _prompt_stripped = prompt.strip()
     if _prompt_stripped.lower().startswith("/add"):
         import evocli_soul.state as _st_add
-        import os as _os_add, hashlib as _hashlib_add
+        import os as _os_add
+        import hashlib as _hashlib_add
         _add_sid = (params.get("session_id") or
                     "cwd_" + _hashlib_add.md5(_os_add.getcwd().encode(),
                                                usedforsecurity=False).hexdigest()[:12])
@@ -224,7 +226,8 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
     # This avoids the dependency on Rust passing history (which it currently doesn't).
     if prompt.strip().lower() in ("/compress", "/compact"):
         import evocli_soul.state as _st_compress
-        import os as _os_compress, hashlib as _hashlib_compress
+        import os as _os_compress
+        import hashlib as _hashlib_compress
         # Use same cwd-derived session_id as main execution path for consistency
         _explicit = params.get("session_id")
         session_id = (_explicit if _explicit else
@@ -332,7 +335,8 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
     if _explicit_sid:
         session_id = _explicit_sid
     else:
-        import os as _os, hashlib as _hashlib
+        import os as _os
+        import hashlib as _hashlib
         _cwd = _os.getcwd()
         # Short hex digest: deterministic per-project, collision-resistant enough
         session_id = "cwd_" + _hashlib.md5(_cwd.encode(), usedforsecurity=False).hexdigest()[:12]
@@ -864,7 +868,7 @@ async def _structured_analyze(llm, prompt: str, tier: str) -> str:
             return (
                 f"## 分析摘要\n{data.get('summary','')}\n\n"
                 f"## 发现的问题\n" + "\n".join(f"- {i}" for i in data.get('issues',[])) + "\n\n"
-                f"## 改进建议\n" + "\n".join(f"- {s}" for s in data.get('suggestions',[])) + "\n\n"
+                "## 改进建议\n" + "\n".join(f"- {s}" for s in data.get('suggestions',[])) + "\n\n"
                 f"**风险等级**: {data.get('risk_level','low')}"
             )
         except Exception:

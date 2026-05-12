@@ -1,4 +1,4 @@
-﻿// EvoCLI Code Intelligence
+// EvoCLI Code Intelligence
 pub mod file_watcher;
 //
 // Layer 1: tree-sitter AST-based symbol indexing (primary, accurate)
@@ -9,7 +9,7 @@ pub mod file_watcher;
 
 pub mod lsp_client;
 pub mod lsp_manager;
-pub mod ts_indexer;  // tree-sitter based indexer
+pub mod ts_indexer; // tree-sitter based indexer
 
 pub use lsp_manager::{FunctionAnalysis, Language, LspManager};
 
@@ -155,10 +155,7 @@ impl CodeIndex {
     ///             Research: Aider switched from ctags to tree-sitter for "richer symbol data"
     ///   Fallback: regex patterns (for unsupported languages or parse failures)
     pub fn index_file(&mut self, file_path: &Path) -> Result<usize> {
-        let ext = file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let content = std::fs::read_to_string(file_path)
             .with_context(|| format!("Cannot read {}", file_path.display()))?;
@@ -179,7 +176,8 @@ impl CodeIndex {
                 let id = Uuid::new_v4().to_string();
                 // Get signature (the full source line)
                 let line_idx = (sym.line.saturating_sub(1)) as usize;
-                let signature = content.lines()
+                let signature = content
+                    .lines()
                     .nth(line_idx)
                     .unwrap_or("")
                     .trim()
@@ -197,7 +195,7 @@ impl CodeIndex {
         }
 
         // ── Layer 1b: regex fallback (for unsupported languages) ─────
-        let all_patterns = get_patterns();  // compiled once via OnceLock
+        let all_patterns = get_patterns(); // compiled once via OnceLock
         let lang = all_patterns.iter().find(|lp| lp.extensions.contains(&ext));
         let lang = match lang {
             Some(l) => l,
@@ -224,7 +222,9 @@ impl CodeIndex {
 
                 // Extract signature (the full matched line)
                 let line_start = content[..mat.start()].rfind('\n').map_or(0, |p| p + 1);
-                let line_end = content[mat.start()..].find('\n').map_or(content.len(), |p| mat.start() + p);
+                let line_end = content[mat.start()..]
+                    .find('\n')
+                    .map_or(content.len(), |p| mat.start() + p);
                 let signature = content[line_start..line_end].trim().to_string();
 
                 let id = Uuid::new_v4().to_string();
@@ -249,10 +249,17 @@ impl CodeIndex {
     /// 填充文件中的调用边（caller → callee）。
     /// 优化算法：先提取文件中出现的所有 symbol_name( 模式，
     /// 再只查询这些名字对应的 symbols，避免 O(callers × all_symbols) 嵌套循环。
-    fn populate_edges_for_file(&self, file_path: &Path, content: &str, file_str: &str) -> Result<()> {
+    fn populate_edges_for_file(
+        &self,
+        file_path: &Path,
+        content: &str,
+        file_str: &str,
+    ) -> Result<()> {
         // 获取当前文件中所有符号（作为潜在 caller）
         let callers = self.list_symbols(file_path)?;
-        if callers.is_empty() { return Ok(()); }
+        if callers.is_empty() {
+            return Ok(());
+        }
 
         // ── OPTIMIZATION: Two-phase approach to avoid O(N×M) complexity ──────────
         //
@@ -268,7 +275,8 @@ impl CodeIndex {
         // Phase 1: Collect all potential callee names from the entire file body.
         // Pattern: alphanumeric/underscore token immediately followed by '('
         // Use a simple character scan instead of regex to keep it dependency-free.
-        let mut potential_callees: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut potential_callees: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for line in content.lines() {
             // Find all "word(" patterns in the line
             let chars: Vec<char> = line.chars().collect();
@@ -283,7 +291,8 @@ impl CodeIndex {
                     // Check if followed by '('
                     if i < chars.len() && chars[i] == '(' {
                         let name: String = chars[start..i].iter().collect();
-                        if name.len() >= 3 {  // skip trivially short names
+                        if name.len() >= 3 {
+                            // skip trivially short names
                             potential_callees.insert(name);
                         }
                     }
@@ -301,8 +310,10 @@ impl CodeIndex {
         // This is a targeted lookup instead of loading all project symbols.
         // SQLite IN clause with bound parameters handles up to 999 items safely.
         let names_vec: Vec<String> = potential_callees.into_iter().collect();
-        let placeholders: String = names_vec.iter().enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))  // ?2, ?3, ... (after ?1 = file_str)
+        let placeholders: String = names_vec
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2)) // ?2, ?3, ... (after ?1 = file_str)
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -318,17 +329,20 @@ impl CodeIndex {
         for name in &names_vec {
             params_owned.push(Box::new(name.clone()));
         }
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params_owned.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params_owned.iter().map(|b| b.as_ref()).collect();
 
-        let matched_callees: Vec<(String, String, String, u32)> = stmt.query_map(
-            param_refs.as_slice(),
-            |row| Ok((
-                row.get::<_, String>(0)?,   // id
-                row.get::<_, String>(1)?,   // name
-                row.get::<_, String>(2)?,   // file
-                row.get::<_, u32>(3)?,      // line
-            ))
-        )?.filter_map(|r| r.ok()).collect();
+        let matched_callees: Vec<(String, String, String, u32)> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // id
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // file
+                    row.get::<_, u32>(3)?,    // line
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
 
         if matched_callees.is_empty() {
             return Ok(());
@@ -338,7 +352,8 @@ impl CodeIndex {
         for caller in &callers {
             let line_offset = caller.line.saturating_sub(1) as usize;
             // Take up to 500 lines of function body (pragmatic limit — most functions are shorter)
-            let body: String = content.lines()
+            let body: String = content
+                .lines()
                 .skip(line_offset)
                 .take(500)
                 .collect::<Vec<_>>()
@@ -347,7 +362,9 @@ impl CodeIndex {
             for (callee_id, callee_name, _callee_file, _callee_line) in &matched_callees {
                 let call_pattern = format!("{}(", callee_name);
                 if body.contains(call_pattern.as_str()) {
-                    let call_line = body.lines().enumerate()
+                    let call_line = body
+                        .lines()
+                        .enumerate()
                         .find(|(_, l)| l.contains(call_pattern.as_str()))
                         .map(|(i, _)| caller.line + i as u32)
                         .unwrap_or(caller.line);
@@ -363,7 +380,10 @@ impl CodeIndex {
     pub fn index_directory(&mut self, dir: &Path, extensions: &[&str]) -> Result<usize> {
         let all_patterns = build_patterns();
         let supported: Vec<&str> = if extensions.is_empty() {
-            all_patterns.iter().flat_map(|lp| lp.extensions.iter().copied()).collect()
+            all_patterns
+                .iter()
+                .flat_map(|lp| lp.extensions.iter().copied())
+                .collect()
         } else {
             extensions.to_vec()
         };
@@ -396,8 +416,16 @@ impl CodeIndex {
     /// Find symbols by exact name.
 
     /// 直接添加符号（来自 tree-sitter Python 分析结果）
-    pub fn add_symbol_direct(&mut self, name: &str, kind: &str, file: &str, line: u32, signature: &str, language: &str) -> Result<()> {
-        let id  = uuid::Uuid::new_v4().to_string();
+    pub fn add_symbol_direct(
+        &mut self,
+        name: &str,
+        kind: &str,
+        file: &str,
+        line: u32,
+        signature: &str,
+        language: &str,
+    ) -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT OR REPLACE INTO symbols (id, name, kind, file, line, signature, language, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -453,14 +481,23 @@ impl CodeIndex {
 
     /// Count total symbols in the index.
     pub fn symbol_count(&self) -> Result<usize> {
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
     // ── Layer 2: Call Graph (Section 16) ────────────────────────
 
     /// Add a call edge (source calls/imports/references target).
-    pub fn add_edge(&self, source_id: &str, target_id: &str, kind: &str, file: &str, line: u32) -> Result<()> {
+    pub fn add_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        kind: &str,
+        file: &str,
+        line: u32,
+    ) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO edges (source_id, target_id, kind, file, line) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![source_id, target_id, kind, file, line],
@@ -474,19 +511,22 @@ impl CodeIndex {
             "SELECT s.id, s.name, s.kind, s.file, s.line, s.signature, s.language FROM symbols s \
              INNER JOIN edges e ON e.source_id = s.id \
              WHERE e.target_id = ?1 AND e.kind = 'calls' \
-             ORDER BY s.file, s.line"
+             ORDER BY s.file, s.line",
         )?;
-        let items = stmt.query_map(params![symbol_id], |row| {
-            Ok(SymbolInfo {
-                id:        row.get(0)?,
-                name:      row.get(1)?,
-                kind:      row.get(2)?,
-                file:      row.get(3)?,
-                line:      row.get(4)?,
-                signature: row.get(5)?,
-                language:  row.get(6)?,
-            })
-        })?.filter_map(|r| r.ok()).collect();
+        let items = stmt
+            .query_map(params![symbol_id], |row| {
+                Ok(SymbolInfo {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    file: row.get(3)?,
+                    line: row.get(4)?,
+                    signature: row.get(5)?,
+                    language: row.get(6)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(items)
     }
 
@@ -496,26 +536,33 @@ impl CodeIndex {
             "SELECT s.id, s.name, s.kind, s.file, s.line, s.signature, s.language FROM symbols s \
              INNER JOIN edges e ON e.target_id = s.id \
              WHERE e.source_id = ?1 AND e.kind = 'calls' \
-             ORDER BY s.file, s.line"
+             ORDER BY s.file, s.line",
         )?;
-        let items = stmt.query_map(params![symbol_id], |row| {
-            Ok(SymbolInfo {
-                id:        row.get(0)?,
-                name:      row.get(1)?,
-                kind:      row.get(2)?,
-                file:      row.get(3)?,
-                line:      row.get(4)?,
-                signature: row.get(5)?,
-                language:  row.get(6)?,
-            })
-        })?.filter_map(|r| r.ok()).collect();
+        let items = stmt
+            .query_map(params![symbol_id], |row| {
+                Ok(SymbolInfo {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    file: row.get(3)?,
+                    line: row.get(4)?,
+                    signature: row.get(5)?,
+                    language: row.get(6)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(items)
     }
 
     /// Recursively find full upstream call chain up to `max_depth` levels.
-    pub fn full_upstream_chain(&self, symbol_id: &str, max_depth: usize) -> Result<Vec<SymbolInfo>> {
+    pub fn full_upstream_chain(
+        &self,
+        symbol_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<SymbolInfo>> {
         let mut visited = std::collections::HashSet::new();
-        let mut result  = Vec::new();
+        let mut result = Vec::new();
         self.collect_upstream(symbol_id, max_depth, &mut visited, &mut result)?;
         Ok(result)
     }
@@ -527,7 +574,9 @@ impl CodeIndex {
         visited: &mut std::collections::HashSet<String>,
         result: &mut Vec<SymbolInfo>,
     ) -> Result<()> {
-        if depth == 0 || visited.contains(symbol_id) { return Ok(()); }
+        if depth == 0 || visited.contains(symbol_id) {
+            return Ok(());
+        }
         visited.insert(symbol_id.to_string());
         for caller in self.incoming_calls(symbol_id)? {
             let caller_id = caller.id.clone();
@@ -540,8 +589,11 @@ impl CodeIndex {
     /// Find test files impacted by changes to the given symbol.
     pub fn impact_test_files(&self, symbol_id: &str) -> Result<Vec<String>> {
         let upstream = self.full_upstream_chain(symbol_id, 5)?;
-        let test_files: std::collections::HashSet<String> = upstream.iter()
-            .filter(|s| s.file.contains("test") || s.file.contains("spec") || s.name.starts_with("test_"))
+        let test_files: std::collections::HashSet<String> = upstream
+            .iter()
+            .filter(|s| {
+                s.file.contains("test") || s.file.contains("spec") || s.name.starts_with("test_")
+            })
             .map(|s| s.file.clone())
             .collect();
         Ok(test_files.into_iter().collect())

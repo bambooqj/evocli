@@ -211,7 +211,8 @@ def _query_litellm(model: str) -> Optional[dict]:
 def _probe_models_endpoint(model: str, base_url: str, api_key: str) -> Optional[dict]:
     """API /v1/models 端点（OpenRouter/vLLM 会返回 context_length）。"""
     try:
-        import urllib.request, json as _j
+        import urllib.request
+        import json as _j
         req = urllib.request.Request(
             base_url.rstrip("/") + "/models",
             headers={"Authorization": f"Bearer {api_key}"},

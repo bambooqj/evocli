@@ -106,11 +106,7 @@ pub struct LspClient {
 
 impl LspClient {
     /// Spawn language server and complete the LSP initialize handshake.
-    pub async fn spawn_and_init(
-        cmd: &str,
-        args: &[&str],
-        workspace_root: &Path,
-    ) -> Result<Self> {
+    pub async fn spawn_and_init(cmd: &str, args: &[&str], workspace_root: &Path) -> Result<Self> {
         let mut cmd_builder = Command::new(cmd);
         // Prevent orphan LSP server processes.
         cmd_builder.kill_on_drop(true);
@@ -122,10 +118,16 @@ impl LspClient {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdout = child.stdout.take()
-            .ok_or_else(|| anyhow::anyhow!("LSP: failed to take stdout (child process did not inherit Stdio::piped)"))?;
-        let stdin = child.stdin.take()
-            .ok_or_else(|| anyhow::anyhow!("LSP: failed to take stdin (child process did not inherit Stdio::piped)"))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            anyhow::anyhow!(
+                "LSP: failed to take stdout (child process did not inherit Stdio::piped)"
+            )
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            anyhow::anyhow!(
+                "LSP: failed to take stdin (child process did not inherit Stdio::piped)"
+            )
+        })?;
 
         let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<LspResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -176,7 +178,8 @@ impl LspClient {
                 if content_length > MAX_LSP_MSG_BYTES {
                     tracing::warn!(
                         "LSP: Content-Length {} exceeds {} byte limit; skipping message",
-                        content_length, MAX_LSP_MSG_BYTES
+                        content_length,
+                        MAX_LSP_MSG_BYTES
                     );
                     continue;
                 }
@@ -311,10 +314,7 @@ impl LspClient {
             Value::Array(arr) => arr,
             _ => return Ok(vec![]),
         };
-        Ok(items
-            .iter()
-            .filter_map(parse_call_hierarchy_item)
-            .collect())
+        Ok(items.iter().filter_map(parse_call_hierarchy_item).collect())
     }
 
     pub async fn incoming_calls(&self, item: &CallHierarchyItem) -> Result<Vec<CallSite>> {
@@ -570,38 +570,46 @@ mod tests {
         let item = CallHierarchyItem {
             name: "dispatch".into(),
             kind: "function".into(),
-            uri:  "file:///crates/host/src/tool_dispatch.rs".into(),
+            uri: "file:///crates/host/src/tool_dispatch.rs".into(),
             range_start_line: 14,
             range_start_char: 0,
         };
-        let json  = serde_json::to_string(&item).unwrap();
+        let json = serde_json::to_string(&item).unwrap();
         let item2: CallHierarchyItem = serde_json::from_str(&json).unwrap();
         assert_eq!(item.name, item2.name);
-        assert_eq!(item.uri,  item2.uri);
+        assert_eq!(item.uri, item2.uri);
         assert_eq!(item.range_start_line, item2.range_start_line);
     }
 
     #[test]
     fn test_location_serialization() {
-        let loc = Location { uri: "file:///src/lib.rs".into(), line: 42, character: 7 };
-        let json  = serde_json::to_string(&loc).unwrap();
+        let loc = Location {
+            uri: "file:///src/lib.rs".into(),
+            line: 42,
+            character: 7,
+        };
+        let json = serde_json::to_string(&loc).unwrap();
         let loc2: Location = serde_json::from_str(&json).unwrap();
-        assert_eq!(loc.line,      loc2.line);
+        assert_eq!(loc.line, loc2.line);
         assert_eq!(loc.character, loc2.character);
     }
 
     #[test]
     fn test_symbol_kind_name_known_values() {
         assert_eq!(symbol_kind_name(12), "function");
-        assert_eq!(symbol_kind_name(6),  "method");
+        assert_eq!(symbol_kind_name(6), "method");
         assert_eq!(symbol_kind_name(23), "struct");
-        assert_eq!(symbol_kind_name(5),  "class");
+        assert_eq!(symbol_kind_name(5), "class");
     }
 
     #[test]
     fn test_symbol_kind_name_unknown_returns_kind_prefix() {
         let result = symbol_kind_name(99);
-        assert!(result.starts_with("kind_"), "Unknown kind should start with 'kind_', got: {}", result);
+        assert!(
+            result.starts_with("kind_"),
+            "Unknown kind should start with 'kind_', got: {}",
+            result
+        );
     }
 
     // ── LSP initialize 消息格式测试 ──────────────────────────────────

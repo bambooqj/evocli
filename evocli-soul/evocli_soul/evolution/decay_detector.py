@@ -1,7 +1,6 @@
 """Skill 腐化检测 — 唯一职责：检测 Skill 是否因依赖或闲置而失效。"""
 from __future__ import annotations
 import logging
-from typing import Optional
 
 log = logging.getLogger("evocli.evolution.decay")
 

@@ -9,11 +9,10 @@ multi_agent.py — 多 Agent 并发执行系统（Section 23）
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable
 
 log = logging.getLogger("evocli.multi_agent")
 

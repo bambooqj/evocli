@@ -30,11 +30,11 @@ pub enum ConfigAction {
 
 pub fn run(action: ConfigAction) -> Result<()> {
     match action {
-        ConfigAction::Show    => cmd_show(),
-        ConfigAction::Edit    => cmd_edit(),
+        ConfigAction::Show => cmd_show(),
+        ConfigAction::Edit => cmd_edit(),
         ConfigAction::Explain => cmd_explain(),
         ConfigAction::Set { key, value } => cmd_set(&key, &value),
-        ConfigAction::Path    => cmd_path(),
+        ConfigAction::Path => cmd_path(),
     }
 }
 
@@ -42,7 +42,7 @@ pub fn run(action: ConfigAction) -> Result<()> {
 
 fn cmd_show() -> Result<()> {
     let cfg_path = Config::path()?;
-    let cfg      = Config::load_or_default()?;
+    let cfg = Config::load_or_default()?;
 
     println!("\n━━━ EvoCLI Configuration ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("  File: {}", cfg_path.display());
@@ -54,10 +54,23 @@ fn cmd_show() -> Result<()> {
     println!();
 
     println!("  [LLM]");
-    println!("  base_url          = {}", cfg.llm.base_url.as_deref().unwrap_or("(auto-detect from model name)"));
+    println!(
+        "  base_url          = {}",
+        cfg.llm
+            .base_url
+            .as_deref()
+            .unwrap_or("(auto-detect from model name)")
+    );
     println!("  tiers.fast        = {:?}", cfg.llm.tiers.fast);
     println!("  tiers.smart       = {:?}", cfg.llm.tiers.smart);
-    println!("  api_key           = {}", if cfg.llm.api_key.is_some() { "*** (set)" } else { "(keyring / env var)" });
+    println!(
+        "  api_key           = {}",
+        if cfg.llm.api_key.is_some() {
+            "*** (set)"
+        } else {
+            "(keyring / env var)"
+        }
+    );
     println!();
 
     println!("  [Context]");
@@ -67,7 +80,21 @@ fn cmd_show() -> Result<()> {
 
     println!("  [Safety]");
     println!("  auto_approve_writes = {}", cfg.safety.auto_approve_writes);
-    println!("  shell_whitelist   = [{}]", cfg.safety.shell_whitelist.iter().take(3).cloned().collect::<Vec<_>>().join(", ") + if cfg.safety.shell_whitelist.len() > 3 { ", ..." } else { "" });
+    println!(
+        "  shell_whitelist   = [{}]",
+        cfg.safety
+            .shell_whitelist
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+            + if cfg.safety.shell_whitelist.len() > 3 {
+                ", ..."
+            } else {
+                ""
+            }
+    );
     println!();
 
     println!("  [Memory]");
@@ -93,7 +120,10 @@ fn cmd_edit() -> Result<()> {
 
     // 如果不存在，先创建示例配置
     if !cfg_path.exists() {
-        println!("Config not found. Creating example config at {}", cfg_path.display());
+        println!(
+            "Config not found. Creating example config at {}",
+            cfg_path.display()
+        );
         create_example_config(&cfg_path)?;
     }
 
@@ -101,7 +131,11 @@ fn cmd_edit() -> Result<()> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| {
-            if cfg!(windows) { "notepad".into() } else { "nano".into() }
+            if cfg!(windows) {
+                "notepad".into()
+            } else {
+                "nano".into()
+            }
         });
 
     println!("Opening {} with {}...", cfg_path.display(), editor);
@@ -176,16 +210,21 @@ fn cmd_set(key: &str, value: &str) -> Result<()> {
     let mut cfg = Config::load_or_default()?;
 
     match key {
-        "llm.base_url"    => cfg.llm.base_url = Some(value.to_string()),
-        "llm.api_key"     => cfg.llm.api_key  = Some(value.to_string()),
-        "llm.tiers.fast"  => cfg.llm.tiers.fast  = value.to_string(),
+        "llm.base_url" => cfg.llm.base_url = Some(value.to_string()),
+        "llm.api_key" => cfg.llm.api_key = Some(value.to_string()),
+        "llm.tiers.fast" => cfg.llm.tiers.fast = value.to_string(),
         "llm.tiers.smart" => cfg.llm.tiers.smart = value.to_string(),
         "context.max_total" => cfg.context.max_total = value.parse().context("Expected integer")?,
-        "context.max_code"  => cfg.context.max_code  = value.parse().context("Expected integer")?,
-        "safety.auto_approve_writes" => cfg.safety.auto_approve_writes = value.parse().context("Expected true/false")?,
-        "memory.max_episodes" => cfg.memory.max_episodes = value.parse().context("Expected integer")?,
+        "context.max_code" => cfg.context.max_code = value.parse().context("Expected integer")?,
+        "safety.auto_approve_writes" => {
+            cfg.safety.auto_approve_writes = value.parse().context("Expected true/false")?
+        }
+        "memory.max_episodes" => {
+            cfg.memory.max_episodes = value.parse().context("Expected integer")?
+        }
         _ => anyhow::bail!(
-            "Unknown config key: '{}'.\nUse 'evocli config explain' to see all available keys.", key
+            "Unknown config key: '{}'.\nUse 'evocli config explain' to see all available keys.",
+            key
         ),
     }
 

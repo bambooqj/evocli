@@ -87,7 +87,7 @@ async def handle_apply_all_blocks(req_id: str, params: dict, send, state) -> Non
       transactional: bool  Use git checkpoint + rollback (default True)
     """
     llm_output    = params.get("llm_output", "")
-    base_dir      = params.get("base_dir", ".")
+    params.get("base_dir", ".")
     transactional = params.get("transactional", True)
     if not llm_output:
         await send.error(req_id, -32600, "llm_output is required")
@@ -206,7 +206,7 @@ async def _run_lint(path: str, cmd: str, language: str, state) -> dict:
     if not cmd:
         ext = p.suffix.lower()
         if ext == ".py" or language == "python":
-            cmd = f"python -m py_compile {{path}}"
+            cmd = "python -m py_compile {path}"
         elif ext == ".rs" or language == "rust":
             # Rust: use cargo check for the workspace
             cmd = "cargo check --message-format short 2>&1 | head -20"

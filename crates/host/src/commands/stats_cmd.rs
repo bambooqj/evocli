@@ -29,7 +29,9 @@ pub fn run() -> Result<()> {
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
         .unwrap_or(0);
     let total_sessions: i64 = conn
-        .query_row("SELECT COUNT(DISTINCT session_id) FROM events", [], |r| r.get(0))
+        .query_row("SELECT COUNT(DISTINCT session_id) FROM events", [], |r| {
+            r.get(0)
+        })
         .unwrap_or(0);
 
     println!("  📊 Overview");
@@ -41,19 +43,21 @@ pub fn run() -> Result<()> {
     println!("  🔧 Top 10 Tools (by call count)");
     if let Ok(mut tool_stmt) = conn.prepare(
         "SELECT data, COUNT(*) as cnt FROM events WHERE event_type = 'tool_called'
-         GROUP BY data ORDER BY cnt DESC LIMIT 10"
+         GROUP BY data ORDER BY cnt DESC LIMIT 10",
     ) {
         let mut has_tools = false;
         if let Ok(mut tool_rows) = tool_stmt.query([]) {
             while let Ok(Some(row)) = tool_rows.next() {
                 let data: String = row.get(0).unwrap_or_default();
-                let cnt: i64     = row.get(1).unwrap_or(0);
+                let cnt: i64 = row.get(1).unwrap_or(0);
                 let tool = extract_json_field(&data, "tool").unwrap_or_else(|| data.clone());
                 println!("  ├─ {:30} {:>6}×", tool, cnt);
                 has_tools = true;
             }
         }
-        if !has_tools { println!("  └─ (no tool call data yet)"); }
+        if !has_tools {
+            println!("  └─ (no tool call data yet)");
+        }
     } else {
         println!("  └─ (events table not yet initialized)");
     }
@@ -69,15 +73,20 @@ pub fn run() -> Result<()> {
     let err_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM events WHERE event_type='tool_error'",
-            [], |r| r.get(0)
-        ).unwrap_or(0);
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let total_calls = ok_count + err_count;
     let success_rate = if total_calls > 0 {
         format!("{:.1}%", ok_count as f64 / total_calls as f64 * 100.0)
     } else {
         "N/A".to_string()
     };
-    println!("  ├─ Successful: {}  /  Failed: {}  /  Rate: {}", ok_count, err_count, success_rate);
+    println!(
+        "  ├─ Successful: {}  /  Failed: {}  /  Rate: {}",
+        ok_count, err_count, success_rate
+    );
     println!();
 
     // ── 4. Skill 执行历史 ────────────────────────────────────
@@ -85,14 +94,21 @@ pub fn run() -> Result<()> {
     let skill_exec: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM events WHERE event_type = 'skill_executed'",
-            [], |r| r.get(0)
-        ).unwrap_or(0);
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let skill_fail: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM events WHERE event_type = 'skill_failed'",
-            [], |r| r.get(0)
-        ).unwrap_or(0);
-    println!("  ├─ Executions: {}  /  Failures: {}", skill_exec, skill_fail);
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    println!(
+        "  ├─ Executions: {}  /  Failures: {}",
+        skill_exec, skill_fail
+    );
 
     // Skill stats from ~/.evocli/skill_stats.json
     let stats_file = dirs::home_dir()
@@ -103,7 +119,8 @@ pub fn run() -> Result<()> {
         if let Ok(raw) = std::fs::read_to_string(&stats_file) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
                 if let Some(obj) = json.as_object() {
-                    let trusted = obj.values()
+                    let trusted = obj
+                        .values()
                         .filter(|v| v["status"].as_str() == Some("trusted"))
                         .count();
                     let total_s = obj.len();
@@ -121,8 +138,10 @@ pub fn run() -> Result<()> {
     let mem_recalls: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM events WHERE event_type = 'memory_recalled'",
-            [], |r| r.get(0)
-        ).unwrap_or(0);
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     println!("  └─ Memory recalls: {}", mem_recalls);
     println!();
 
@@ -133,12 +152,12 @@ pub fn run() -> Result<()> {
         "SELECT strftime('%Y-%m-%d', created_at) as day, COUNT(*) as cnt
          FROM events
          WHERE created_at >= datetime('now', '-7 days')
-         GROUP BY day ORDER BY day"
+         GROUP BY day ORDER BY day",
     ) {
         if let Ok(mut day_rows) = day_stmt.query([]) {
             while let Ok(Some(row)) = day_rows.next() {
                 let day: String = row.get(0).unwrap_or_default();
-                let cnt: i64    = row.get(1).unwrap_or(0);
+                let cnt: i64 = row.get(1).unwrap_or(0);
                 daily.push((day, cnt));
             }
         }

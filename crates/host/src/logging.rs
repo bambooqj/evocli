@@ -39,9 +39,7 @@ pub fn init(debug_mode: bool) -> Result<WorkerGuard> {
 
     if debug_mode {
         // Debug mode: file + stderr
-        let stderr_layer = fmt::layer()
-            .with_writer(std::io::stderr)
-            .with_target(true);
+        let stderr_layer = fmt::layer().with_writer(std::io::stderr).with_target(true);
 
         tracing_subscriber::registry()
             .with(EnvFilter::new(env_filter))

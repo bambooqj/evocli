@@ -30,9 +30,10 @@ pub fn run(action: DebugAction) -> Result<()> {
 }
 
 fn dump_diagnostics(output: Option<PathBuf>) -> Result<()> {
-    let home   = dirs::home_dir().unwrap_or_default();
-    let ts     = chrono::Utc::now().format("%Y-%m-%d-%H%M%S");
-    let target = output.unwrap_or_else(|| home.join("Desktop").join(format!("evocli-debug-{}", ts)));
+    let home = dirs::home_dir().unwrap_or_default();
+    let ts = chrono::Utc::now().format("%Y-%m-%d-%H%M%S");
+    let target =
+        output.unwrap_or_else(|| home.join("Desktop").join(format!("evocli-debug-{}", ts)));
 
     println!("\n🔍 Collecting diagnostics...");
 
@@ -43,7 +44,7 @@ fn dump_diagnostics(output: Option<PathBuf>) -> Result<()> {
     // Config (sanitized — API keys removed)
     let cfg_path = evocli_dir.join("config.toml");
     if cfg_path.exists() {
-        let raw  = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+        let raw = std::fs::read_to_string(&cfg_path).unwrap_or_default();
         let sanitized = sanitize_config(&raw);
         files.push(("config.toml".into(), sanitized.into_bytes()));
         println!("  ✅ Config (sanitized)");
@@ -65,16 +66,28 @@ fn dump_diagnostics(output: Option<PathBuf>) -> Result<()> {
     // Job queue stats
     let jobs_db = evocli_dir.join("jobs.db");
     if jobs_db.exists() {
-        files.push(("jobs_db_size.txt".into(),
-            format!("{} bytes", std::fs::metadata(&jobs_db).map(|m| m.len()).unwrap_or(0)).into_bytes()));
+        files.push((
+            "jobs_db_size.txt".into(),
+            format!(
+                "{} bytes",
+                std::fs::metadata(&jobs_db).map(|m| m.len()).unwrap_or(0)
+            )
+            .into_bytes(),
+        ));
         println!("  ✅ Job queue stats");
     }
 
     // Memory stats (no content, just counts)
     let mem_db = evocli_dir.join("memory.db");
     if mem_db.exists() {
-        files.push(("memory_stats.txt".into(),
-            format!("memory.db: {} bytes", std::fs::metadata(&mem_db).map(|m| m.len()).unwrap_or(0)).into_bytes()));
+        files.push((
+            "memory_stats.txt".into(),
+            format!(
+                "memory.db: {} bytes",
+                std::fs::metadata(&mem_db).map(|m| m.len()).unwrap_or(0)
+            )
+            .into_bytes(),
+        ));
         println!("  ✅ Memory stats");
     }
 
@@ -88,15 +101,21 @@ fn dump_diagnostics(output: Option<PathBuf>) -> Result<()> {
 
 fn sanitize_config(raw: &str) -> String {
     // Remove API keys and sensitive values
-    raw.lines().map(|line| {
-        if line.to_lowercase().contains("key") || line.to_lowercase().contains("secret") || line.to_lowercase().contains("token") {
-            let parts: Vec<&str> = line.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                return format!("{} = \"[REDACTED]\"", parts[0].trim());
+    raw.lines()
+        .map(|line| {
+            if line.to_lowercase().contains("key")
+                || line.to_lowercase().contains("secret")
+                || line.to_lowercase().contains("token")
+            {
+                let parts: Vec<&str> = line.splitn(2, '=').collect();
+                if parts.len() == 2 {
+                    return format!("{} = \"[REDACTED]\"", parts[0].trim());
+                }
             }
-        }
-        line.to_string()
-    }).collect::<Vec<_>>().join("\n")
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn read_tail(path: &PathBuf, lines: usize) -> Result<Vec<u8>> {
@@ -130,10 +149,10 @@ fn read_tail(path: &PathBuf, lines: usize) -> Result<Vec<u8>> {
 }
 
 fn collect_system_info() -> String {
-    let os   = std::env::consts::OS;
+    let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let ver  = env!("CARGO_PKG_VERSION");
-    let python = std::process::Command::new(if cfg!(windows) {"python"} else {"python3"})
+    let ver = env!("CARGO_PKG_VERSION");
+    let python = std::process::Command::new(if cfg!(windows) { "python" } else { "python3" })
         .args(["--version"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -153,7 +172,10 @@ fn write_bundle(target: &PathBuf, files: &[(String, Vec<u8>)]) -> Result<()> {
 }
 
 fn show_events(limit: usize) -> Result<()> {
-    let db_path = dirs::home_dir().unwrap_or_default().join(".evocli").join("events.db");
+    let db_path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".evocli")
+        .join("events.db");
     if !db_path.exists() {
         println!("No events database found. Start evocli to initialize.");
         return Ok(());
@@ -163,25 +185,32 @@ fn show_events(limit: usize) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT type, session_id, payload, created_at FROM events ORDER BY created_at DESC LIMIT ?1"
     )?;
-    let events: Vec<(String, String, String, String)> = stmt.query_map(
-        rusqlite::params![limit as i64],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-    )?.filter_map(|r| r.ok()).collect();
+    let events: Vec<(String, String, String, String)> = stmt
+        .query_map(rusqlite::params![limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     if events.is_empty() {
         println!("No events recorded yet.");
         return Ok(());
     }
-    println!("{:<20} {:<20} {:<40} {}", "Time", "Type", "Session", "Payload");
+    println!(
+        "{:<20} {:<20} {:<40} {}",
+        "Time", "Type", "Session", "Payload"
+    );
     println!("{}", "─".repeat(100));
     for (ev_type, session_id, payload, created_at) in events.iter().rev() {
         // Use char-based truncation to avoid panicking on multibyte UTF-8 in payload
         let payload_display: String = payload.chars().take(40).collect();
-        println!("{:<20} {:<20} {:<40} {}",
-            &created_at[..19.min(created_at.len())],  // timestamps are ASCII-safe
+        println!(
+            "{:<20} {:<20} {:<40} {}",
+            &created_at[..19.min(created_at.len())], // timestamps are ASCII-safe
             ev_type,
-            &session_id[..20.min(session_id.len())],  // session IDs are hex-safe
-            payload_display);
+            &session_id[..20.min(session_id.len())], // session IDs are hex-safe
+            payload_display
+        );
     }
     Ok(())
 }

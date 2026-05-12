@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from typing import Optional
 
 log = logging.getLogger("evocli.web_fetcher")
 

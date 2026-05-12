@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::{
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    event::{EnableMouseCapture, DisableMouseCapture, EnableBracketedPaste, DisableBracketedPaste},
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -26,22 +26,22 @@ use soul_bridge::{SoulBridge, StreamChunk};
 
 /// Cleanup guard — restores terminal on drop (even on panic / early return).
 /// Tracks whether mouse capture was enabled so cleanup matches setup.
-struct CleanupGuard { mouse_enabled: bool }
+struct CleanupGuard {
+    mouse_enabled: bool,
+}
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         if self.mouse_enabled {
-            let _ = execute!(io::stdout(),
+            let _ = execute!(
+                io::stdout(),
                 DisableMouseCapture,
                 DisableBracketedPaste,
                 LeaveAlternateScreen,
             );
         } else {
-            let _ = execute!(io::stdout(),
-                DisableBracketedPaste,
-                LeaveAlternateScreen,
-            );
+            let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen,);
         }
     }
 }
@@ -54,18 +54,27 @@ impl Drop for CleanupGuard {
 /// `first_chunk_timeout_s` — how long to wait for the first stream chunk before showing error.
 /// `enable_mouse` — if true, capture mouse events (wheel scroll); if false, native terminal
 ///   text selection/copy works but mouse wheel is inactive (use PageUp/Down keyboard shortcuts).
-pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Option<&str>, max_context_tokens: usize, first_chunk_timeout_s: u64, enable_mouse: bool) -> Result<()> {
+pub async fn run(
+    bridge: Arc<SoulBridge>,
+    model_name: &str,
+    resume_session: Option<&str>,
+    max_context_tokens: usize,
+    first_chunk_timeout_s: u64,
+    enable_mouse: bool,
+) -> Result<()> {
     // ── Setup terminal ──────────────────────────────────
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     if enable_mouse {
-        execute!(stdout,
+        execute!(
+            stdout,
             EnterAlternateScreen,
-            EnableMouseCapture,      // mouse scroll; disables native text selection
+            EnableMouseCapture, // mouse scroll; disables native text selection
             EnableBracketedPaste,
         )?;
     } else {
-        execute!(stdout,
+        execute!(
+            stdout,
             EnterAlternateScreen,
             // No EnableMouseCapture → terminal handles text selection natively.
             // Users can click+drag to select text and use Ctrl+C/right-click to copy.
@@ -75,7 +84,9 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
     }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let _guard = CleanupGuard { mouse_enabled: enable_mouse };
+    let _guard = CleanupGuard {
+        mouse_enabled: enable_mouse,
+    };
 
     // ── App state + textarea ────────────────────────────
     let mut app = App::new(model_name.to_string(), max_context_tokens);
@@ -85,10 +96,11 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
 
     // P2-1: Session resume — inject a context-restore message
     if let Some(sid) = resume_session {
-        app.messages.push(app::ChatMessage::System(
-            format!("↩ Resuming session {} — previous context loaded", &sid[..sid.len().min(16)])
-        ));
-                                app.invalidate_cache();
+        app.messages.push(app::ChatMessage::System(format!(
+            "↩ Resuming session {} — previous context loaded",
+            &sid[..sid.len().min(16)]
+        )));
+        app.invalidate_cache();
     }
 
     // ── Keyboard event channel ──────────────────────────
@@ -100,7 +112,9 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
         let mut kb_shutdown_rx = kb_shutdown_rx;
         loop {
             // Non-blocking shutdown check via try_recv (works in blocking context).
-            if kb_shutdown_rx.try_recv().is_ok() { break; }
+            if kb_shutdown_rx.try_recv().is_ok() {
+                break;
+            }
             if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
                 if let Ok(ev) = crossterm::event::read() {
                     if event_tx.blocking_send(ev).is_err() {
@@ -124,17 +138,24 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
     // 关键：不能每帧都调用 textarea.set_block()，否则每次按键都会重置
     // tui-textarea 的内部状态（光标位置、视口偏移），产生"打断输入"的感觉
     #[derive(PartialEq, Clone)]
-    enum InputMode { Active, Waiting, Responding, UsingTool, NeedApproval, SkillRun }
+    enum InputMode {
+        Active,
+        Waiting,
+        Responding,
+        UsingTool,
+        NeedApproval,
+        SkillRun,
+    }
 
     fn get_input_mode(state: &AppState) -> InputMode {
         match state {
             AppState::Idle | AppState::Error(_) => InputMode::Active,
-            AppState::Thinking              => InputMode::Waiting,
-            AppState::Streaming { .. }      => InputMode::Responding,
-            AppState::CallingTool { .. }    => InputMode::UsingTool,
-            AppState::WaitingApproval { .. }=> InputMode::NeedApproval,
-            AppState::WaitingChoice { .. }  => InputMode::NeedApproval,
-            AppState::SkillRunning { .. }   => InputMode::SkillRun,
+            AppState::Thinking => InputMode::Waiting,
+            AppState::Streaming { .. } => InputMode::Responding,
+            AppState::CallingTool { .. } => InputMode::UsingTool,
+            AppState::WaitingApproval { .. } => InputMode::NeedApproval,
+            AppState::WaitingChoice { .. } => InputMode::NeedApproval,
+            AppState::SkillRunning { .. } => InputMode::SkillRun,
         }
     }
 
@@ -497,14 +518,19 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
         if !matches!(app.state, AppState::WaitingChoice { .. }) {
             if let Some(req) = bridge.get_pending_choice().await {
                 app.state = AppState::WaitingChoice {
-                    title:        req.title,
-                    options:      req.options.into_iter()
-                        .map(|o| app::ChoiceItem { id: o.id, label: o.label })
+                    title: req.title,
+                    options: req
+                        .options
+                        .into_iter()
+                        .map(|o| app::ChoiceItem {
+                            id: o.id,
+                            label: o.label,
+                        })
                         .collect(),
                     selected_idx: 0,
                     allow_custom: req.allow_custom,
                     custom_input: String::new(),
-                    custom_mode:  false,
+                    custom_mode: false,
                 };
             }
         }
@@ -520,24 +546,30 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
 /// P3-1: 查询调用链，返回 CallChain 消息（或错误 System 消息）
 async fn fetch_call_chain(bridge: &SoulBridge, symbol: &str) -> ChatMessage {
     // Step 1: symbol.lookup
-    let lookup = bridge.call("symbol.lookup", serde_json::json!({ "name": symbol })).await;
+    let lookup = bridge
+        .call("symbol.lookup", serde_json::json!({ "name": symbol }))
+        .await;
     let (file, line, symbol_id) = match lookup {
         Ok(v) => {
             // symbol.lookup returns {"found": bool, "symbols": [...], "did_you_mean": []}.
             // Fall back gracefully for legacy array responses.
-            let first = v.get("symbols")
+            let first = v
+                .get("symbols")
                 .and_then(|s| s.as_array())
                 .and_then(|a| a.first())
                 .unwrap_or(&v);
-            let sym_id = first["id"].as_str()
+            let sym_id = first["id"]
+                .as_str()
                 .or_else(|| v["id"].as_str())
                 .unwrap_or(symbol)
                 .to_string();
-            let f = first["file"].as_str()
+            let f = first["file"]
+                .as_str()
                 .or_else(|| v["file"].as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let l = first["line"].as_u64()
+            let l = first["line"]
+                .as_u64()
                 .or_else(|| v["line"].as_u64())
                 .unwrap_or(0) as u32;
             (f, l, sym_id)
@@ -547,15 +579,21 @@ async fn fetch_call_chain(bridge: &SoulBridge, symbol: &str) -> ChatMessage {
 
     // Step 2: incoming + outgoing calls (parallel)
     let (in_result, out_result) = tokio::join!(
-        bridge.call("code_intel.incoming_calls", serde_json::json!({ "symbol_id": symbol_id })),
-        bridge.call("code_intel.outgoing_calls", serde_json::json!({ "symbol_id": symbol_id })),
+        bridge.call(
+            "code_intel.incoming_calls",
+            serde_json::json!({ "symbol_id": symbol_id })
+        ),
+        bridge.call(
+            "code_intel.outgoing_calls",
+            serde_json::json!({ "symbol_id": symbol_id })
+        ),
     );
 
     let incoming = parse_call_list(in_result.unwrap_or(serde_json::Value::Array(vec![])));
     let outgoing = parse_call_list(out_result.unwrap_or(serde_json::Value::Array(vec![])));
 
     ChatMessage::CallChain {
-        symbol:   symbol.to_string(),
+        symbol: symbol.to_string(),
         file,
         line,
         incoming,
@@ -567,12 +605,13 @@ async fn fetch_call_chain(bridge: &SoulBridge, symbol: &str) -> ChatMessage {
 fn parse_call_list(val: serde_json::Value) -> Vec<String> {
     let arr = match val.as_array() {
         Some(a) => a.clone(),
-        None    => return vec![],
+        None => return vec![],
     };
     arr.iter()
         .filter_map(|item| {
             let name = item["name"].as_str().unwrap_or("");
-            let file = item["file"].as_str()
+            let file = item["file"]
+                .as_str()
                 .map(|f| {
                     // 只显示文件名，不显示完整路径
                     std::path::Path::new(f)
@@ -583,9 +622,13 @@ fn parse_call_list(val: serde_json::Value) -> Vec<String> {
                 })
                 .unwrap_or_default();
             let line = item["line"].as_u64().unwrap_or(0);
-            if name.is_empty() { None }
-            else if file.is_empty() { Some(name.to_string()) }
-            else { Some(format!("{} ({}:{})", name, file, line)) }
+            if name.is_empty() {
+                None
+            } else if file.is_empty() {
+                Some(name.to_string())
+            } else {
+                Some(format!("{} ({}:{})", name, file, line))
+            }
         })
         .take(10)
         .collect()
@@ -597,21 +640,21 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
     match event_type {
         // FIX-E: litellm 计算的精确成本（via Python Soul cost_update event）
         "cost_update" => {
-            let cost    = event["cost_usd"].as_f64().unwrap_or(0.0);
-            let in_tok  = event["input_tokens"].as_u64().unwrap_or(0) as usize;
+            let cost = event["cost_usd"].as_f64().unwrap_or(0.0);
+            let in_tok = event["input_tokens"].as_u64().unwrap_or(0) as usize;
             let out_tok = event["output_tokens"].as_u64().unwrap_or(0) as usize;
 
             // Session-level accumulators (for /cost command: total $ spent, total tokens processed)
             app.session_cost_usd += cost;
-            app.tokens_input     += in_tok;
-            app.tokens_output    += out_tok;
-            app.tokens_used       = app.tokens_input + app.tokens_output;
+            app.tokens_input += in_tok;
+            app.tokens_output += out_tok;
+            app.tokens_used = app.tokens_input + app.tokens_output;
 
             // Current-turn values: SET (not accumulated) so the token bar
             // shows "how full is the context window RIGHT NOW?" not a growing sum.
             // in_tok = full prompt sent this turn (system + history + user) = current context size.
             app.current_ctx_tokens = in_tok;
-            app.last_out_tokens    = out_tok;
+            app.last_out_tokens = out_tok;
 
             // Update the LAST assistant message's token display with real output count.
             if out_tok > 0 {
@@ -625,22 +668,25 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
             }
         }
         "tool_call_start" => {
-            let tool    = event["tool"].as_str().unwrap_or("").to_string();
+            let tool = event["tool"].as_str().unwrap_or("").to_string();
             let display = event["display"].as_str().unwrap_or(&tool).to_string();
             // FIX-B: 在对话中显示正在调用的工具
             app.messages.push(ChatMessage::ToolCall {
-                tool:    tool.clone(),
+                tool: tool.clone(),
                 display: display.clone(),
-                ok:      None,
+                ok: None,
             });
-                                app.invalidate_cache();
+            app.invalidate_cache();
             app.state = AppState::CallingTool { tool, display };
         }
         "tool_call_done" => {
             let ok = event["ok"].as_bool().unwrap_or(true);
             // 更新最后一条 ToolCall 消息的状态（⟳ → ✓/✗）
             for msg in app.messages.iter_mut().rev() {
-                if let ChatMessage::ToolCall { ok: ref mut status, .. } = msg {
+                if let ChatMessage::ToolCall {
+                    ok: ref mut status, ..
+                } = msg
+                {
                     if status.is_none() {
                         *status = Some(ok);
                         break;
@@ -656,43 +702,50 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
             }
         }
         "skill_started" => {
-            let skill_id    = event["skill_id"].as_str().unwrap_or("").to_string();
-            let skill_name  = event["skill_name"].as_str().unwrap_or(&skill_id).to_string();
+            let skill_id = event["skill_id"].as_str().unwrap_or("").to_string();
+            let skill_name = event["skill_name"]
+                .as_str()
+                .unwrap_or(&skill_id)
+                .to_string();
             let total_steps = event["total_steps"].as_u64().unwrap_or(1) as usize;
             app.start_skill(&skill_id, &skill_name, total_steps);
         }
         "skill_step" => {
-            let step_idx  = event["step_idx"].as_u64().unwrap_or(0) as usize;
+            let step_idx = event["step_idx"].as_u64().unwrap_or(0) as usize;
             let step_name = event["step_name"].as_str().unwrap_or("running").to_string();
-            let status    = match event["status"].as_str() {
+            let status = match event["status"].as_str() {
                 Some("waiting_approval") => StepStatus::WaitingApproval,
-                Some("done")             => StepStatus::Done,
-                Some("failed")           => StepStatus::Failed(
-                    event["error"].as_str().unwrap_or("").to_string()
-                ),
-                _                        => StepStatus::Running,
+                Some("done") => StepStatus::Done,
+                Some("failed") => {
+                    StepStatus::Failed(event["error"].as_str().unwrap_or("").to_string())
+                }
+                _ => StepStatus::Running,
             };
             app.update_skill_step(step_idx, &step_name, status);
         }
         "skill_finished" => {
-            let skill_id   = event["skill_id"].as_str().unwrap_or("").to_string();
-            let ok         = event["ok"].as_bool().unwrap_or(false);
+            let skill_id = event["skill_id"].as_str().unwrap_or("").to_string();
+            let ok = event["ok"].as_bool().unwrap_or(false);
             let steps_done = event["steps"].as_u64().unwrap_or(0) as usize;
-            let summary    = event["summary"].as_str().unwrap_or("").to_string();
+            let summary = event["summary"].as_str().unwrap_or("").to_string();
             app.finish_skill(&skill_id, ok, steps_done, &summary);
         }
         // Python WARNING / ERROR log lines.
         // Push a transient notification instead of adding to chat history.
         // The full details are in evocli.log (F12 to view).
         "log" => {
-            let level   = event["level"].as_str().unwrap_or("info");
+            let level = event["level"].as_str().unwrap_or("info");
             let message = event["message"].as_str().unwrap_or("");
             let notif_level = match level {
                 "error" | "critical" => app::NotifLevel::Error,
-                "warning" | "warn"   => app::NotifLevel::Warn,
-                _                    => return, // INFO → silent
+                "warning" | "warn" => app::NotifLevel::Warn,
+                _ => return, // INFO → silent
             };
-            let icon = if notif_level == app::NotifLevel::Error { "⛔" } else { "⚠" };
+            let icon = if notif_level == app::NotifLevel::Error {
+                "⛔"
+            } else {
+                "⚠"
+            };
             app.notify(format!("{icon} {message}  ·  F12 for details"), notif_level);
         }
 
@@ -706,22 +759,23 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
         //               on first startup (they're meaningful system events).
         //   "error"   → transient notification (prominent)
         "soul_status" => {
-            let status  = event["status"].as_str().unwrap_or("info");
+            let status = event["status"].as_str().unwrap_or("info");
             let message = event["message"].as_str().unwrap_or("");
             match status {
                 "loading" => {
                     // Transient: show in notification bar, auto-expires in 8s.
                     // Never pushed to permanent messages to avoid "stuck loading" UX.
-                    app.notify(
-                        format!("⏳ {message}"),
-                        app::NotifLevel::Info,
-                    );
+                    app.notify(format!("⏳ {message}"), app::NotifLevel::Info);
                 }
                 "ready" => {
                     // "Memory ready" and similar startup messages → chat (one-time info)
                     // but only if they look like startup completion messages.
-                    if message.contains("ready") || message.contains("✅") || message.contains("loaded") {
-                        app.messages.push(ChatMessage::System(format!("✅ {message}")));
+                    if message.contains("ready")
+                        || message.contains("✅")
+                        || message.contains("loaded")
+                    {
+                        app.messages
+                            .push(ChatMessage::System(format!("✅ {message}")));
                         app.invalidate_cache();
                     } else {
                         // Other ready messages (e.g. restart confirmation) → transient
@@ -738,6 +792,6 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
             }
         }
 
-        _ => {}  // 其他事件忽略（soul_ready 等）
+        _ => {} // 其他事件忽略（soul_ready 等）
     }
 }

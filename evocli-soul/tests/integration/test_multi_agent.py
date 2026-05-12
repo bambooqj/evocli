@@ -125,8 +125,10 @@ class TestParallelToolExecutor:
         executor = ParallelToolExecutor(bridge)
 
         items   = ["fn main", "struct App", "impl Error"]
-        mapper  = lambda q: {"tool": "search.code", "args": {"query": q}, "id": q}
-        reducer = lambda results: {"total": sum(len(r["result"]) for r in results if r["ok"])}
+        def mapper(q):
+            return {"tool": "search.code", "args": {"query": q}, "id": q}
+        def reducer(results):
+            return {"total": sum(len(r["result"]) for r in results if r["ok"])}
 
         output = await executor.map_reduce(items, mapper, reducer)
         assert output["total"] == 3, f"Expected 3 total matches, got {output}"
@@ -141,7 +143,6 @@ class TestWorkerPool:
     async def test_submit_tasks_all_complete(self):
         """submit_tasks — 所有任务都应完成（done 或 failed）"""
         from evocli_soul.multi_agent import WorkerPool, AgentTask
-        import uuid as _uuid
 
         bridge = MockBridge()
         pool   = WorkerPool(bridge, max_workers=2)

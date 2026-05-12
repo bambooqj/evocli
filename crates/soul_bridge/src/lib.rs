@@ -23,27 +23,27 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RpcRequest {
-    pub id:     String,
+    pub id: String,
     pub method: String,
     pub params: Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RpcResponse {
-    pub id:     String,
+    pub id: String,
     pub result: Option<Value>,
-    pub error:  Option<RpcError>,
+    pub error: Option<RpcError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RpcError {
-    pub code:    i32,
+    pub code: i32,
     pub message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StreamChunk {
-    pub id:   String,
+    pub id: String,
     pub text: String,
     pub done: bool,
 }
@@ -51,18 +51,22 @@ pub struct StreamChunk {
 /// Python Soul 发来的工具调用请求
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolCallRequest {
-    pub id:   String,           // request id，用于回复
-    pub tool: String,           // 如 "fs.read" / "shell.run"
+    pub id: String,   // request id，用于回复
+    pub tool: String, // 如 "fs.read" / "shell.run"
     pub args: Value,
 }
 
 /// Rust 处理工具调用的函数签名
-pub type ToolHandler = Arc<dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>> + Send + Sync>;
+pub type ToolHandler = Arc<
+    dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// 用于 prompt.choice 的单个选项
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChoiceOption {
-    pub id:    String,
+    pub id: String,
     pub label: String,
 }
 
@@ -80,8 +84,8 @@ pub enum ChoiceResult {
 /// soul_bridge 内部存储的选择请求
 #[derive(Debug, Clone)]
 pub struct ChoiceRequest {
-    pub title:        String,
-    pub options:      Vec<ChoiceOption>,
+    pub title: String,
+    pub options: Vec<ChoiceOption>,
     pub allow_custom: bool,
 }
 
@@ -90,7 +94,7 @@ pub struct ChoiceRequest {
 /// Per-process mutable state: replaced atomically on Python Soul restart.
 /// Held inside Mutex so the outer Arc<SoulBridge> never changes.
 struct BridgeInner {
-    _child:   Child,
+    _child: Child,
     stdin_tx: mpsc::UnboundedSender<String>,
 }
 
@@ -109,22 +113,22 @@ struct BridgeInner {
 ///   6. New reader task starts, reuses existing channel senders
 pub struct SoulBridge {
     /// Stored for process respawn
-    soul_path:       String,
+    soul_path: String,
     /// Per-process state — replaced on restart
-    inner:           Mutex<BridgeInner>,
-    pending:         Arc<Mutex<HashMap<String, oneshot::Sender<RpcResponse>>>>,
-    streams:         Arc<Mutex<HashMap<String, mpsc::UnboundedSender<StreamChunk>>>>,
+    inner: Mutex<BridgeInner>,
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<RpcResponse>>>>,
+    streams: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<StreamChunk>>>>,
     /// Sender prototype for new reader tasks (mpsc allows multiple senders)
-    tool_tx_proto:   mpsc::UnboundedSender<ToolCallRequest>,
-    tool_rx:         Arc<Mutex<mpsc::UnboundedReceiver<ToolCallRequest>>>,
-    tool_notify:     Arc<tokio::sync::Notify>,
+    tool_tx_proto: mpsc::UnboundedSender<ToolCallRequest>,
+    tool_rx: Arc<Mutex<mpsc::UnboundedReceiver<ToolCallRequest>>>,
+    tool_notify: Arc<tokio::sync::Notify>,
     /// Sender prototype for new reader tasks
-    event_tx_proto:  mpsc::UnboundedSender<serde_json::Value>,
-    event_rx:        Arc<Mutex<mpsc::UnboundedReceiver<serde_json::Value>>>,
+    event_tx_proto: mpsc::UnboundedSender<serde_json::Value>,
+    event_rx: Arc<Mutex<mpsc::UnboundedReceiver<serde_json::Value>>>,
     /// Notified by EOF handler; watchdog listens and calls try_restart()
     pub restart_signal: Arc<tokio::sync::Notify>,
     approval_request: Arc<Mutex<Option<(String, oneshot::Sender<bool>)>>>,
-    choice_request:   Arc<Mutex<Option<(ChoiceRequest, oneshot::Sender<ChoiceResult>)>>>,
+    choice_request: Arc<Mutex<Option<(ChoiceRequest, oneshot::Sender<ChoiceResult>)>>>,
 }
 
 impl SoulBridge {
@@ -141,8 +145,12 @@ impl SoulBridge {
         tokio::spawn(async move {
             let mut w = tokio::io::BufWriter::new(stdin);
             while let Some(line) = stdin_rx.recv().await {
-                if w.write_all(line.as_bytes()).await.is_err() { break; }
-                if w.write_all(b"\n").await.is_err() { break; }
+                if w.write_all(line.as_bytes()).await.is_err() {
+                    break;
+                }
+                if w.write_all(b"\n").await.is_err() {
+                    break;
+                }
                 let _ = w.flush().await;
             }
         });
@@ -160,8 +168,13 @@ impl SoulBridge {
         let restart_signal = Arc::new(tokio::sync::Notify::new());
 
         Self::_start_reader(
-            stdout, pending.clone(), streams.clone(), tool_tx, event_tx,
-            tool_notify.clone(), restart_signal.clone(),
+            stdout,
+            pending.clone(),
+            streams.clone(),
+            tool_tx,
+            event_tx,
+            tool_notify.clone(),
+            restart_signal.clone(),
         );
 
         let approval_request: Arc<Mutex<Option<(String, oneshot::Sender<bool>)>>> =
@@ -171,7 +184,10 @@ impl SoulBridge {
 
         Ok(Self {
             soul_path: soul_script.to_string(),
-            inner: Mutex::new(BridgeInner { _child: child, stdin_tx }),
+            inner: Mutex::new(BridgeInner {
+                _child: child,
+                stdin_tx,
+            }),
             pending,
             streams,
             tool_tx_proto,
@@ -186,7 +202,9 @@ impl SoulBridge {
     }
 
     /// Low-level process spawn: build Python command, spawn, return handles.
-    async fn _spawn_process(soul_script: &str) -> Result<(
+    async fn _spawn_process(
+        soul_script: &str,
+    ) -> Result<(
         tokio::process::Child,
         tokio::process::ChildStdin,
         tokio::process::ChildStdout,
@@ -198,23 +216,34 @@ impl SoulBridge {
 
         let managed_python = {
             let venv_base = dirs::home_dir()
-                .unwrap_or_default().join(".evocli").join("venv");
+                .unwrap_or_default()
+                .join(".evocli")
+                .join("venv");
             let managed = if cfg!(windows) {
                 venv_base.join("Scripts").join("python.exe")
             } else {
                 venv_base.join("bin").join("python3")
             };
-            if managed.exists() { Some(managed) } else { None }
+            if managed.exists() {
+                Some(managed)
+            } else {
+                None
+            }
         };
 
         let python_exe = managed_python
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| {
-                if cfg!(target_os = "windows") { "python".into() } else { "python3".into() }
+                if cfg!(target_os = "windows") {
+                    "python".into()
+                } else {
+                    "python3".into()
+                }
             });
 
-        let (run_args, pythonpath): (Vec<String>, Option<String>) = if soul_script.ends_with(".py") {
+        let (run_args, pythonpath): (Vec<String>, Option<String>) = if soul_script.ends_with(".py")
+        {
             let p = std::path::Path::new(soul_script);
             if let (Some(pkg_dir), Some(filename)) = (p.parent(), p.file_stem()) {
                 if let Some(pkg_name) = pkg_dir.file_name().and_then(|n| n.to_str()) {
@@ -235,7 +264,10 @@ impl SoulBridge {
                 (vec!["-u".into(), soul_script.to_string()], None)
             }
         } else {
-            (vec!["-u".into(), "-m".into(), soul_script.to_string()], None)
+            (
+                vec!["-u".into(), "-m".into(), soul_script.to_string()],
+                None,
+            )
         };
 
         let mut cmd = Command::new(&python_exe);
@@ -244,10 +276,14 @@ impl SoulBridge {
             .stdout(Stdio::piped())
             .env("PYTHONIOENCODING", "utf-8");
 
-        let log_dir = dirs::home_dir().unwrap_or_default().join(".evocli").join("logs");
+        let log_dir = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".evocli")
+            .join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
         let stderr_sink = std::fs::OpenOptions::new()
-            .create(true).append(true)
+            .create(true)
+            .append(true)
             .open(log_dir.join("soul_stderr.log"))
             .map(Stdio::from)
             .unwrap_or_else(|_| Stdio::null());
@@ -257,19 +293,24 @@ impl SoulBridge {
         if let Some(ref pp) = pythonpath {
             let sep = if cfg!(windows) { ";" } else { ":" };
             let existing = std::env::var("PYTHONPATH").unwrap_or_default();
-            let merged = if existing.is_empty() { pp.clone() }
-                         else { format!("{}{}{}", pp, sep, existing) };
+            let merged = if existing.is_empty() {
+                pp.clone()
+            } else {
+                format!("{}{}{}", pp, sep, existing)
+            };
             cmd.env("PYTHONPATH", &merged);
         }
 
-        let mut child = cmd.spawn().with_context(|| format!(
-            "Failed to spawn Python Soul.\n  Python: {}\n  Args: {:?}\n  PYTHONPATH: {:?}\n  \
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "Failed to spawn Python Soul.\n  Python: {}\n  Args: {:?}\n  PYTHONPATH: {:?}\n  \
               Tip: run `evocli init` to set up managed Python environment.",
-            python_exe, run_args, pythonpath
-        ))?;
+                python_exe, run_args, pythonpath
+            )
+        })?;
 
         let stdout = child.stdout.take().context("no stdout")?;
-        let stdin  = child.stdin.take().context("no stdin")?;
+        let stdin = child.stdin.take().context("no stdin")?;
         Ok((child, stdin, stdout))
     }
 
@@ -278,18 +319,20 @@ impl SoulBridge {
     /// Uses sender clones so the existing tool_rx/event_rx receivers still work.
     fn _start_reader(
         stdout: tokio::process::ChildStdout,
-        pending:      Arc<Mutex<HashMap<String, oneshot::Sender<RpcResponse>>>>,
-        streams:      Arc<Mutex<HashMap<String, mpsc::UnboundedSender<StreamChunk>>>>,
-        tool_tx:      mpsc::UnboundedSender<ToolCallRequest>,
-        event_tx:     mpsc::UnboundedSender<serde_json::Value>,
-        tool_notify:  Arc<tokio::sync::Notify>,
+        pending: Arc<Mutex<HashMap<String, oneshot::Sender<RpcResponse>>>>,
+        streams: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<StreamChunk>>>>,
+        tool_tx: mpsc::UnboundedSender<ToolCallRequest>,
+        event_tx: mpsc::UnboundedSender<serde_json::Value>,
+        tool_notify: Arc<tokio::sync::Notify>,
         restart_signal: Arc<tokio::sync::Notify>,
     ) {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let line = line.trim().to_string();
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
 
                 let v = match serde_json::from_str::<Value>(&line) {
                     Ok(v) => v,
@@ -301,7 +344,7 @@ impl SoulBridge {
                 match method {
                     "tool.call" => {
                         if let Some(params) = v.get("params") {
-                            let id   = v["id"].as_str().unwrap_or("").to_string();
+                            let id = v["id"].as_str().unwrap_or("").to_string();
                             let tool = params["tool"].as_str().unwrap_or("").to_string();
                             let args = params["args"].clone();
                             let _ = tool_tx.send(ToolCallRequest { id, tool, args });
@@ -310,7 +353,9 @@ impl SoulBridge {
                     }
 
                     "stream.chunk" => {
-                        if let Ok(chunk) = serde_json::from_value::<StreamChunk>(v["params"].clone()) {
+                        if let Ok(chunk) =
+                            serde_json::from_value::<StreamChunk>(v["params"].clone())
+                        {
                             let id = chunk.id.clone();
                             if let Some(tx) = streams.lock().await.get(&id) {
                                 let _ = tx.send(chunk);
@@ -332,12 +377,15 @@ impl SoulBridge {
                             } else if let Some(err) = resp.error {
                                 if let Some(tx) = streams.lock().await.remove(&id) {
                                     let error_chunk = StreamChunk {
-                                        id:   id.clone(),
+                                        id: id.clone(),
                                         text: format!("ERROR: {} (code {})", err.message, err.code),
                                         done: true,
                                     };
                                     let _ = tx.send(error_chunk);
-                                    tracing::debug!("Converted JSON-RPC error to stream done-chunk for {}", id);
+                                    tracing::debug!(
+                                        "Converted JSON-RPC error to stream done-chunk for {}",
+                                        id
+                                    );
                                 }
                             }
                         }
@@ -374,7 +422,10 @@ impl SoulBridge {
     /// What stays intact: TUI, pending channels, tool_rx, event_rx (multi-sender mpsc)
     /// What gets replaced: Python child process, stdin writer task, stdout reader task
     pub async fn try_restart(&self) -> Result<()> {
-        tracing::info!("Attempting Python Soul restart (soul_path={})", self.soul_path);
+        tracing::info!(
+            "Attempting Python Soul restart (soul_path={})",
+            self.soul_path
+        );
 
         // Build and spawn new Python process (reuse spawn() logic via helper)
         let (new_child, new_stdin, new_stdout) = Self::_spawn_process(&self.soul_path).await?;
@@ -384,8 +435,12 @@ impl SoulBridge {
         tokio::spawn(async move {
             let mut w = tokio::io::BufWriter::new(new_stdin);
             while let Some(line) = new_stdin_rx.recv().await {
-                if w.write_all(line.as_bytes()).await.is_err() { break; }
-                if w.write_all(b"\n").await.is_err() { break; }
+                if w.write_all(line.as_bytes()).await.is_err() {
+                    break;
+                }
+                if w.write_all(b"\n").await.is_err() {
+                    break;
+                }
                 let _ = w.flush().await;
             }
         });
@@ -395,15 +450,15 @@ impl SoulBridge {
             new_stdout,
             self.pending.clone(),
             self.streams.clone(),
-            self.tool_tx_proto.clone(),   // new clone → same tool_rx receiver
-            self.event_tx_proto.clone(),  // new clone → same event_rx receiver
+            self.tool_tx_proto.clone(), // new clone → same tool_rx receiver
+            self.event_tx_proto.clone(), // new clone → same event_rx receiver
             self.tool_notify.clone(),
             self.restart_signal.clone(),
         );
 
         // Replace BridgeInner atomically
         *self.inner.lock().await = BridgeInner {
-            _child:   new_child,
+            _child: new_child,
             stdin_tx: new_stdin_tx,
         };
 
@@ -421,19 +476,34 @@ impl SoulBridge {
         self.call_with_timeout(method, params, 60_000).await
     }
 
-    pub async fn call_with_timeout(&self, method: &str, params: Value, timeout_ms: u64) -> Result<Value> {
-        let id  = Uuid::new_v4().to_string();
-        let req = RpcRequest { id: id.clone(), method: method.to_string(), params };
+    pub async fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let id = Uuid::new_v4().to_string();
+        let req = RpcRequest {
+            id: id.clone(),
+            method: method.to_string(),
+            params,
+        };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
         // Send to Python via inner.stdin_tx (Mutex held only during send, not during await)
-        self.inner.lock().await.stdin_tx.send(serde_json::to_string(&req)?)?;
+        self.inner
+            .lock()
+            .await
+            .stdin_tx
+            .send(serde_json::to_string(&req)?)?;
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
             Ok(Ok(resp)) => {
-                if let Some(err) = resp.error { bail!("[{}] {}", err.code, err.message); }
+                if let Some(err) = resp.error {
+                    bail!("[{}] {}", err.code, err.message);
+                }
                 Ok(resp.result.unwrap_or(Value::Null))
             }
-            Ok(Err(e))   => bail!("Response channel closed: {}", e),
+            Ok(Err(e)) => bail!("Response channel closed: {}", e),
             Err(_elapsed) => {
                 self.pending.lock().await.remove(&id);
                 bail!("RPC call '{}' timed out after {}ms", method, timeout_ms)
@@ -441,12 +511,24 @@ impl SoulBridge {
         }
     }
 
-    pub async fn call_stream(&self, method: &str, params: Value) -> Result<mpsc::UnboundedReceiver<StreamChunk>> {
-        let id  = Uuid::new_v4().to_string();
-        let req = RpcRequest { id: id.clone(), method: method.to_string(), params };
+    pub async fn call_stream(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<mpsc::UnboundedReceiver<StreamChunk>> {
+        let id = Uuid::new_v4().to_string();
+        let req = RpcRequest {
+            id: id.clone(),
+            method: method.to_string(),
+            params,
+        };
         let (tx, rx) = mpsc::unbounded_channel();
         self.streams.lock().await.insert(id.clone(), tx);
-        self.inner.lock().await.stdin_tx.send(serde_json::to_string(&req)?)?;
+        self.inner
+            .lock()
+            .await
+            .stdin_tx
+            .send(serde_json::to_string(&req)?)?;
         Ok(rx)
     }
 
@@ -507,7 +589,9 @@ impl SoulBridge {
 
     /// Check if there's a pending approval request (TUI polls this).
     pub async fn get_pending_approval(&self) -> Option<String> {
-        self.approval_request.lock().await
+        self.approval_request
+            .lock()
+            .await
             .as_ref()
             .map(|(msg, _)| msg.clone())
     }
@@ -526,9 +610,8 @@ impl SoulBridge {
     pub async fn request_choice(&self, req: ChoiceRequest) -> ChoiceResult {
         let (tx, rx) = oneshot::channel();
         *self.choice_request.lock().await = Some((req, tx));
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(120), rx
-        ).await
+        let result = tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+            .await
             .ok()
             .and_then(|r| r.ok())
             .unwrap_or(ChoiceResult::Cancelled);
@@ -538,7 +621,9 @@ impl SoulBridge {
 
     /// TUI polls this to detect a pending choice prompt.
     pub async fn get_pending_choice(&self) -> Option<ChoiceRequest> {
-        self.choice_request.lock().await
+        self.choice_request
+            .lock()
+            .await
             .as_ref()
             .map(|(req, _)| req.clone())
     }
@@ -583,12 +668,19 @@ pub fn spawn_restart_watchdog(bridge: std::sync::Arc<SoulBridge>) {
         let mut consecutive_failures: u32 = 0;
         loop {
             bridge.restart_signal.notified().await;
-            tracing::warn!("Soul restart signal received (consecutive_failures={})", consecutive_failures);
+            tracing::warn!(
+                "Soul restart signal received (consecutive_failures={})",
+                consecutive_failures
+            );
 
             // Exponential backoff: 2s, 4s, 8s (max 3 attempts)
             for attempt in 1u32..=3 {
                 let wait_secs = 2u64.pow(attempt - 1);
-                tracing::info!("Soul restart attempt {}/3, waiting {}s...", attempt, wait_secs);
+                tracing::info!(
+                    "Soul restart attempt {}/3, waiting {}s...",
+                    attempt,
+                    wait_secs
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
 
                 match bridge.try_restart().await {

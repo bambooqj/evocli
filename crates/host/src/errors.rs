@@ -29,7 +29,9 @@ impl EvoCLIError {
     pub fn user_message(&self) -> String {
         match self {
             Self::ApiKeyMissing { provider } => {
-                format!("API key for '{provider}' is not configured. Run `evocli init` to set it up.")
+                format!(
+                    "API key for '{provider}' is not configured. Run `evocli init` to set it up."
+                )
             }
             Self::InvalidProvider { provider } => {
                 format!("Unknown provider '{provider}'. Supported: anthropic, openai, deepseek, ollama.")

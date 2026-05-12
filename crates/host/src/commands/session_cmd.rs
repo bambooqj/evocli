@@ -13,11 +13,14 @@ pub enum SessionAction {
     /// Resume latest interrupted session (or specify ID)
     Resume { session_id: Option<String> },
     /// Pause a session (saves snapshot)
-    Pause  { session_id: String },
+    Pause { session_id: String },
 }
 
 fn sessions_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".evocli").join("sessions")
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".evocli")
+        .join("sessions")
 }
 
 pub fn run(action: SessionAction) -> Result<()> {
@@ -25,7 +28,7 @@ pub fn run(action: SessionAction) -> Result<()> {
     match action {
         SessionAction::List { status } => list(&dir, status.as_deref()),
         SessionAction::Resume { session_id } => resume(&dir, session_id.as_deref()),
-        SessionAction::Pause { session_id }  => pause(&dir, &session_id),
+        SessionAction::Pause { session_id } => pause(&dir, &session_id),
     }
 }
 
@@ -34,7 +37,8 @@ fn list(dir: &PathBuf, status_filter: Option<&str>) -> Result<()> {
         println!("无 Session 记录。运行 evocli 开始第一个 Session。");
         return Ok(());
     }
-    let mut entries: Vec<serde_json::Value> = dir.read_dir()?
+    let mut entries: Vec<serde_json::Value> = dir
+        .read_dir()?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |x| x == "json"))
         .filter_map(|e| {
@@ -43,30 +47,40 @@ fn list(dir: &PathBuf, status_filter: Option<&str>) -> Result<()> {
         })
         .filter(|v: &serde_json::Value| match status_filter {
             Some(s) => v["status"].as_str() == Some(s),
-            None    => true,
+            None => true,
         })
         .collect();
 
     entries.sort_by(|a, b| {
-        b["last_active"].as_str().unwrap_or("").cmp(a["last_active"].as_str().unwrap_or(""))
+        b["last_active"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["last_active"].as_str().unwrap_or(""))
     });
 
     if entries.is_empty() {
         println!("无匹配 Session。");
         return Ok(());
     }
-    println!("{:<22} {:<36} {:<14} {}", "Session ID", "Goal", "Status", "Last Active");
+    println!(
+        "{:<22} {:<36} {:<14} {}",
+        "Session ID", "Goal", "Status", "Last Active"
+    );
     println!("{}", "─".repeat(90));
     for e in &entries {
-        let id   = e["id"].as_str().unwrap_or("?");
+        let id = e["id"].as_str().unwrap_or("?");
         let goal = e["goal"].as_str().unwrap_or("?");
         let stat = e["status"].as_str().unwrap_or("?");
         let time = e["last_active"].as_str().unwrap_or("?");
         // char-based truncation: user-entered session goals are likely to contain Chinese text
         let goal_display: String = goal.chars().take(36).collect();
-        println!("{:<22} {:<36} {:<14} {}",
-            &id[..id.len().min(22)], goal_display,
-            stat, &time[..time.len().min(19)]);
+        println!(
+            "{:<22} {:<36} {:<14} {}",
+            &id[..id.len().min(22)],
+            goal_display,
+            stat,
+            &time[..time.len().min(19)]
+        );
     }
     Ok(())
 }
@@ -85,11 +99,18 @@ fn resume(dir: &PathBuf, session_id: Option<&str>) -> Result<()> {
                     .filter_map(|e| {
                         let txt = std::fs::read_to_string(e.path()).ok()?;
                         let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
-                        if v["status"].as_str() == Some(status) { Some(v) } else { None }
+                        if v["status"].as_str() == Some(status) {
+                            Some(v)
+                        } else {
+                            None
+                        }
                     })
                     .collect();
                 entries.sort_by(|a, b| {
-                    b["last_active"].as_str().unwrap_or("").cmp(a["last_active"].as_str().unwrap_or(""))
+                    b["last_active"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(a["last_active"].as_str().unwrap_or(""))
                 });
                 if let Some(e) = entries.first() {
                     found = e["id"].as_str().unwrap_or("").to_string();
@@ -115,9 +136,18 @@ fn resume(dir: &PathBuf, session_id: Option<&str>) -> Result<()> {
 
     println!();
     println!("  Session:     {}", id);
-    println!("  Goal:        {}", meta["goal"].as_str().unwrap_or("(unknown)"));
-    println!("  Status:      {}", meta["status"].as_str().unwrap_or("unknown"));
-    println!("  Last active: {}", meta["last_active"].as_str().unwrap_or("unknown"));
+    println!(
+        "  Goal:        {}",
+        meta["goal"].as_str().unwrap_or("(unknown)")
+    );
+    println!(
+        "  Status:      {}",
+        meta["status"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "  Last active: {}",
+        meta["last_active"].as_str().unwrap_or("unknown")
+    );
     println!();
 
     // 更新 session 状态为 active
@@ -133,7 +163,10 @@ fn resume(dir: &PathBuf, session_id: Option<&str>) -> Result<()> {
         .join(".resume_session");
     std::fs::write(&resume_flag, &id)?;
 
-    println!("  Starting EvoCLI with session {}...", &id[..id.len().min(16)]);
+    println!(
+        "  Starting EvoCLI with session {}...",
+        &id[..id.len().min(16)]
+    );
     println!("  The AI will resume from where you left off.");
     println!();
 
@@ -156,7 +189,7 @@ fn pause(dir: &PathBuf, session_id: &str) -> Result<()> {
     let path = dir.join(format!("{}.json", session_id));
     if path.exists() {
         let mut data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-        data["status"]      = serde_json::json!("paused");
+        data["status"] = serde_json::json!("paused");
         data["last_active"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
         std::fs::write(&path, serde_json::to_string_pretty(&data)?)?;
     }

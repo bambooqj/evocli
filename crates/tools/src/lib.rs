@@ -47,8 +47,8 @@ pub struct CommandOutput {
 // tools::init_security() is called once at startup by the host crate
 // after loading the full SecurityConfig.
 
-static ALLOWED: OnceLock<Vec<String>>  = OnceLock::new();
-static BLOCKED: OnceLock<Vec<String>>  = OnceLock::new();
+static ALLOWED: OnceLock<Vec<String>> = OnceLock::new();
+static BLOCKED: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Initialize security lists from config.
 /// Called once at startup by the host crate (main.rs or tool_dispatch.rs).
@@ -63,7 +63,9 @@ fn get_allowed() -> &'static [String] {
 }
 
 fn get_blocked() -> &'static [String] {
-    BLOCKED.get_or_init(|| load_blocked_from_config_file()).as_slice()
+    BLOCKED
+        .get_or_init(|| load_blocked_from_config_file())
+        .as_slice()
 }
 
 /// Legacy fallback: read allowed_commands from config.toml.
@@ -87,8 +89,12 @@ fn load_blocked_from_config_file() -> Vec<String> {
     let cfg = dirs::home_dir()
         .map(|h| h.join(".evocli").join("config.toml"))
         .filter(|p| p.exists());
-    let Some(path) = cfg else { return default_blocked_fallback(); };
-    let Ok(content) = std::fs::read_to_string(&path) else { return default_blocked_fallback(); };
+    let Some(path) = cfg else {
+        return default_blocked_fallback();
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return default_blocked_fallback();
+    };
     parse_string_array_from_toml(&content, "security", "blocked_patterns")
         .unwrap_or_else(default_blocked_fallback)
 }
@@ -97,30 +103,113 @@ fn load_blocked_from_config_file() -> Vec<String> {
 /// Only used when config file is missing/unreadable AND init_security was not called.
 fn default_allowed_fallback() -> Vec<String> {
     vec![
-        "cargo","rustc","rustup","rust-analyzer",
-        "npm","npx","node","pnpm","yarn","bun","deno",
-        "python","python3","pip","uv",
-        "go","gofmt","gopls","make","cmake","ninja",
-        "mvn","gradle","java","javac","dotnet",
-        "evocli","git","cd",
-        "cat","ls","dir","echo","head","tail","wc","grep","find","fd","rg",
-        "pwd","which","type","env","printenv","stat","file","diff","patch",
-        "sort","uniq","cut","awk","sed","xargs","tr","curl","wget",
-        "jq","yq","zip","unzip","tar","gzip","gunzip",
-        "ps","top","htop","mkdir","touch","cp","mv",
-    ].into_iter().map(String::from).collect()
+        "cargo",
+        "rustc",
+        "rustup",
+        "rust-analyzer",
+        "npm",
+        "npx",
+        "node",
+        "pnpm",
+        "yarn",
+        "bun",
+        "deno",
+        "python",
+        "python3",
+        "pip",
+        "uv",
+        "go",
+        "gofmt",
+        "gopls",
+        "make",
+        "cmake",
+        "ninja",
+        "mvn",
+        "gradle",
+        "java",
+        "javac",
+        "dotnet",
+        "evocli",
+        "git",
+        "cd",
+        "cat",
+        "ls",
+        "dir",
+        "echo",
+        "head",
+        "tail",
+        "wc",
+        "grep",
+        "find",
+        "fd",
+        "rg",
+        "pwd",
+        "which",
+        "type",
+        "env",
+        "printenv",
+        "stat",
+        "file",
+        "diff",
+        "patch",
+        "sort",
+        "uniq",
+        "cut",
+        "awk",
+        "sed",
+        "xargs",
+        "tr",
+        "curl",
+        "wget",
+        "jq",
+        "yq",
+        "zip",
+        "unzip",
+        "tar",
+        "gzip",
+        "gunzip",
+        "ps",
+        "top",
+        "htop",
+        "mkdir",
+        "touch",
+        "cp",
+        "mv",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 fn default_blocked_fallback() -> Vec<String> {
     vec![
-        "rm -rf /","rm -rf /*","rm -rf ~","rm -rf ~/",
-        "rm -rf /etc","rm -rf /usr","rm -rf /bin","rm -rf /var",
-        "rm -rf /home","rm -rf /root","rm -rf /boot",
-        "chmod -r 777 /","chmod 777 /",
-        "> /dev/sda","dd if=","dd of=/dev/","mkfs","wipefs",
-        ":(){ :|:& };:","find / -delete",
-        "format c:","format d:","rd /s /q c:\\",
-    ].into_iter().map(String::from).collect()
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf ~",
+        "rm -rf ~/",
+        "rm -rf /etc",
+        "rm -rf /usr",
+        "rm -rf /bin",
+        "rm -rf /var",
+        "rm -rf /home",
+        "rm -rf /root",
+        "rm -rf /boot",
+        "chmod -r 777 /",
+        "chmod 777 /",
+        "> /dev/sda",
+        "dd if=",
+        "dd of=/dev/",
+        "mkfs",
+        "wipefs",
+        ":(){ :|:& };:",
+        "find / -delete",
+        "format c:",
+        "format d:",
+        "rd /s /q c:\\",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// Minimal TOML array parser (tools crate cannot depend on serde/toml).
@@ -129,8 +218,14 @@ fn parse_string_array_from_toml(content: &str, section: &str, key: &str) -> Opti
     let mut in_section = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed == section_header { in_section = true; continue; }
-        if trimmed.starts_with('[') { in_section = false; continue; }
+        if trimmed == section_header {
+            in_section = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_section = false;
+            continue;
+        }
         if in_section && trimmed.starts_with(key) {
             if let Some(start) = trimmed.find('[') {
                 // Handle multi-line arrays (find closing ])
@@ -146,7 +241,9 @@ fn parse_string_array_from_toml(content: &str, section: &str, key: &str) -> Opti
                     .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                if !result.is_empty() { return Some(result); }
+                if !result.is_empty() {
+                    return Some(result);
+                }
             }
         }
     }
@@ -190,8 +287,8 @@ pub fn run_command(
 
     let allowed_list = get_allowed();
     let allowed = allowed_list.iter().any(|prefix| {
-        binary_name == prefix.as_str()
-            || binary_name.starts_with(&format!("{prefix}."))  // e.g. python3.11
+        binary_name == prefix.as_str() || binary_name.starts_with(&format!("{prefix}."))
+        // e.g. python3.11
     });
     if !allowed {
         bail!(
@@ -206,7 +303,10 @@ pub fn run_command(
     if dry_run {
         return Ok(CommandOutput {
             exit_code: 0,
-            stdout: format!("[dry-run] would execute: {cmd_trimmed}\n  in: {}", cwd.display()),
+            stdout: format!(
+                "[dry-run] would execute: {cmd_trimmed}\n  in: {}",
+                cwd.display()
+            ),
             stderr: String::new(),
         });
     }
@@ -225,12 +325,26 @@ pub fn run_command(
         // 0 = bash, 1 = pwsh, 2 = powershell(PS5)
         static WIN_SHELL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
         let shell_id = *WIN_SHELL.get_or_init(|| {
-            if std::process::Command::new("bash").args(["--version"])
-                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false) { return 0u8; }
-            if std::process::Command::new("pwsh").args(["--version"])
-                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false) { return 1u8; }
+            if std::process::Command::new("bash")
+                .args(["--version"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                return 0u8;
+            }
+            if std::process::Command::new("pwsh")
+                .args(["--version"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                return 1u8;
+            }
             2u8
         });
 
@@ -242,9 +356,31 @@ pub fn run_command(
         };
 
         match shell_id {
-            0 => { let mut c = Command::new("bash"); c.args(["-c", effective_cmd.as_ref()]); c }
-            1 => { let mut c = Command::new("pwsh"); c.args(["-NoProfile", "-NonInteractive", "-Command", effective_cmd.as_ref()]); c }
-            _ => { let mut c = Command::new("powershell"); c.args(["-NoProfile", "-NonInteractive", "-Command", effective_cmd.as_ref()]); c }
+            0 => {
+                let mut c = Command::new("bash");
+                c.args(["-c", effective_cmd.as_ref()]);
+                c
+            }
+            1 => {
+                let mut c = Command::new("pwsh");
+                c.args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    effective_cmd.as_ref(),
+                ]);
+                c
+            }
+            _ => {
+                let mut c = Command::new("powershell");
+                c.args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    effective_cmd.as_ref(),
+                ]);
+                c
+            }
         }
     };
 
@@ -281,7 +417,7 @@ pub fn run_command(
                 // kill() sends SIGKILL but does NOT reap the process table entry.
                 // Without wait(), the zombie lingers until the Host process exits.
                 let _ = child.kill();
-                let _ = child.wait();  // Reap the zombie — collect exit status
+                let _ = child.wait(); // Reap the zombie — collect exit status
                 bail!("Command timed out after {timeout_secs}s: {cmd_trimmed}");
             }
             Err(e) => bail!("Failed to wait for command: {e}"),
@@ -356,11 +492,17 @@ fn read_pipe<R: std::io::Read>(pipe: Option<R>) -> String {
 // ── Convenience trait for timeout (std doesn't have wait_timeout) ──
 
 trait WaitTimeout {
-    fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>>;
+    fn wait_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>>;
 }
 
 impl WaitTimeout for std::process::Child {
-    fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    fn wait_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let start = std::time::Instant::now();
         loop {
             match self.try_wait()? {
@@ -461,22 +603,25 @@ pub enum CommandRoute {
 /// 判断命令应该走哪条路由（v3.x Brush 层）
 pub fn classify_command(cmd: &str) -> CommandRoute {
     let first = cmd.trim().split_whitespace().next().unwrap_or("");
-    let binary = Path::new(first).file_name()
-        .and_then(|n| n.to_str()).unwrap_or(first);
+    let binary = Path::new(first)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(first);
 
     // uutils 内置工具集（不需要外部进程）
     const UUTILS_BUILTINS: &[&str] = &[
-        "ls", "cat", "grep", "find", "wc", "head", "tail", "sed", "awk",
-        "sort", "uniq", "cut", "tr", "echo", "printf", "cp", "mv", "rm",
-        "mkdir", "rmdir", "touch", "chmod", "chown", "ln", "readlink",
-        "basename", "dirname", "pwd", "env", "true", "false", "test", "[",
-        "tar", "zip", "gzip", "xargs", "tee", "sleep", "date", "id",
+        "ls", "cat", "grep", "find", "wc", "head", "tail", "sed", "awk", "sort", "uniq", "cut",
+        "tr", "echo", "printf", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "chmod", "chown",
+        "ln", "readlink", "basename", "dirname", "pwd", "env", "true", "false", "test", "[", "tar",
+        "zip", "gzip", "xargs", "tee", "sleep", "date", "id",
     ];
 
     // 危险模式检查
     let cmd_lower = cmd.to_lowercase();
     for pattern in get_blocked() {
-        if cmd_lower.contains(pattern.to_lowercase().as_str()) { return CommandRoute::Blocked; }
+        if cmd_lower.contains(pattern.to_lowercase().as_str()) {
+            return CommandRoute::Blocked;
+        }
     }
 
     if UUTILS_BUILTINS.contains(&binary) {
@@ -505,7 +650,7 @@ pub fn classify_command(cmd: &str) -> CommandRoute {
 #[derive(Debug, Clone)]
 pub struct WasmSandboxConfig {
     /// 允许读取的目录（WASI preopened dirs）
-    pub allowed_read_dirs:  Vec<PathBuf>,
+    pub allowed_read_dirs: Vec<PathBuf>,
     /// 允许写入的目录
     pub allowed_write_dirs: Vec<PathBuf>,
     /// 内存限制（字节，默认 128MB）
@@ -519,11 +664,11 @@ pub struct WasmSandboxConfig {
 impl Default for WasmSandboxConfig {
     fn default() -> Self {
         Self {
-            allowed_read_dirs:  vec![],
+            allowed_read_dirs: vec![],
             allowed_write_dirs: vec![],
-            memory_limit:       128 * 1024 * 1024, // 128 MB
-            cpu_limit_secs:     30,
-            allow_network:      false,
+            memory_limit: 128 * 1024 * 1024, // 128 MB
+            cpu_limit_secs: 30,
+            allow_network: false,
         }
     }
 }
@@ -532,8 +677,8 @@ impl Default for WasmSandboxConfig {
 #[derive(Debug, Clone)]
 pub struct WasmOutput {
     pub exit_code: i32,
-    pub stdout:    String,
-    pub stderr:    String,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// 在 WASM 沙箱中执行 WASI 二进制（v3.x，需要 feature = "wasm-sandbox"）
@@ -551,8 +696,10 @@ pub fn run_in_wasm_sandbox(
     //   3. wasmtime_wasi::WasiCtxBuilder 设置 preopened_dirs / inherit_stdio
     //   4. wasmtime::Linker::new + linker.module + store.call("_start")
     //   5. 捕获 stdout/stderr 写入 pipe
-    bail!("WASM sandbox not yet implemented (v3.x feature). \
-           Add wasmtime crate and enable feature = [\"wasm-sandbox\"]")
+    bail!(
+        "WASM sandbox not yet implemented (v3.x feature). \
+           Add wasmtime crate and enable feature = [\"wasm-sandbox\"]"
+    )
 }
 
 /// 检查 WASM sandbox 是否可用（compile-time feature check）
@@ -580,4 +727,3 @@ pub fn wasm_sandbox_available() -> bool {
 // [features]
 // brush          = ["dep:brush-core", "dep:uucore", ...]
 // wasm-sandbox   = ["dep:wasmtime", "dep:wasmtime-wasi"]
-

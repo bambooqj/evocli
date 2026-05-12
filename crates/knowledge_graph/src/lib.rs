@@ -32,11 +32,11 @@
 //! ```
 
 pub mod bm25_index;
+pub mod context;
 pub mod graph_analysis;
 pub mod hybrid_search;
-pub mod context;
 pub mod wiki;
 
 pub use bm25_index::Bm25Index;
-pub use graph_analysis::{KnowledgeGraph, Community, BlastRadius, ExecutionFlow};
 pub use context::SymbolContext;
+pub use graph_analysis::{BlastRadius, Community, ExecutionFlow, KnowledgeGraph};

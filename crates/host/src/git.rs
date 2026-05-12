@@ -21,9 +21,9 @@ pub struct StatusEntry {
 /// One entry from shadow git log.
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotEntry {
-    pub hash:  String,
+    pub hash: String,
     pub label: String,
-    pub age:   String,
+    pub age: String,
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────
@@ -35,8 +35,11 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
         .output()
         .with_context(|| format!("failed to run: git {}", args.join(" ")))?;
     if !out.status.success() {
-        bail!("git {} failed: {}", args.join(" "),
-              String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -44,13 +47,17 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
 /// Run git with explicit --git-dir and --work-tree for shadow repo.
 fn shadow_cmd(shadow: &Path, work_tree: &Path) -> Command {
     let mut cmd = Command::new("git");
-    cmd.arg("--git-dir").arg(shadow)
-       .arg("--work-tree").arg(work_tree);
+    cmd.arg("--git-dir")
+        .arg(shadow)
+        .arg("--work-tree")
+        .arg(work_tree);
     cmd
 }
 
 fn run_shadow(shadow: &Path, work_tree: &Path, args: &[&str]) -> Result<String> {
-    let out = shadow_cmd(shadow, work_tree).args(args).output()
+    let out = shadow_cmd(shadow, work_tree)
+        .args(args)
+        .output()
         .with_context(|| format!("shadow git {}", args.join(" ")))?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -59,9 +66,13 @@ fn run_shadow(shadow: &Path, work_tree: &Path, args: &[&str]) -> Result<String> 
 
 pub fn git_status(repo: &Path) -> Result<Vec<StatusEntry>> {
     let raw = run_git(repo, &["status", "--porcelain=v1"])?;
-    Ok(raw.lines()
+    Ok(raw
+        .lines()
         .filter(|l| l.len() >= 4)
-        .map(|l| StatusEntry { code: l[..2].to_string(), path: l[3..].to_string() })
+        .map(|l| StatusEntry {
+            code: l[..2].to_string(),
+            path: l[3..].to_string(),
+        })
         .collect())
 }
 
@@ -95,9 +106,13 @@ pub fn git_restore(repo: &Path, stash_ref: &str) -> Result<()> {
 }
 
 pub fn git_commit(repo: &Path, message: &str, files: &[String]) -> Result<String> {
-    if files.is_empty() { bail!("no files specified for commit"); }
+    if files.is_empty() {
+        bail!("no files specified for commit");
+    }
     let mut add_args: Vec<&str> = vec!["add", "--"];
-    for f in files { add_args.push(f.as_str()); }
+    for f in files {
+        add_args.push(f.as_str());
+    }
     run_git(repo, &add_args)?;
     run_git(repo, &["commit", "-m", message])?;
     run_git(repo, &["rev-parse", "--short", "HEAD"])
@@ -115,10 +130,17 @@ pub fn git_log(repo: &Path, count: usize) -> Result<String> {
 
 pub fn git_diff(repo: &Path) -> Result<String> {
     let unstaged = run_git(repo, &["diff"])?;
-    let staged   = run_git(repo, &["diff", "--cached"])?;
+    let staged = run_git(repo, &["diff", "--cached"])?;
     let mut result = String::new();
-    if !staged.is_empty()   { result.push_str("=== STAGED ===\n");   result.push_str(&staged);   result.push('\n'); }
-    if !unstaged.is_empty() { result.push_str("=== UNSTAGED ===\n"); result.push_str(&unstaged); }
+    if !staged.is_empty() {
+        result.push_str("=== STAGED ===\n");
+        result.push_str(&staged);
+        result.push('\n');
+    }
+    if !unstaged.is_empty() {
+        result.push_str("=== UNSTAGED ===\n");
+        result.push_str(&unstaged);
+    }
     Ok(result)
 }
 
@@ -134,13 +156,21 @@ pub fn shadow_git_dir(project: &Path) -> PathBuf {
 /// Initialise shadow repo (idempotent).
 pub fn shadow_init(project: &Path) -> Result<()> {
     let shadow = shadow_git_dir(project);
-    if shadow.join("HEAD").exists() { return Ok(()); }
+    if shadow.join("HEAD").exists() {
+        return Ok(());
+    }
     std::fs::create_dir_all(&shadow)?;
 
-    let out = Command::new("git").args(["init", "--bare"]).arg(&shadow)
-        .output().context("shadow git init")?;
+    let out = Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&shadow)
+        .output()
+        .context("shadow git init")?;
     if !out.status.success() {
-        bail!("shadow git init failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "shadow git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     if let Some(s) = project.to_str() {
         let _ = run_shadow(&shadow, project, &["config", "core.worktree", s]);
@@ -158,15 +188,24 @@ pub fn shadow_snapshot(project: &Path, turn_label: &str) -> Result<String> {
     let _ = shadow_cmd(&shadow, project).args(["add", "-A"]).output();
 
     let out = shadow_cmd(&shadow, project)
-        .args(["commit", "--allow-empty", "-m", turn_label,
-               "--author", "EvoCLI <evocli@local>"])
-        .output().context("shadow commit")?;
+        .args([
+            "commit",
+            "--allow-empty",
+            "-m",
+            turn_label,
+            "--author",
+            "EvoCLI <evocli@local>",
+        ])
+        .output()
+        .context("shadow commit")?;
     if !out.status.success() {
-        bail!("shadow commit failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "shadow commit failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
-    let hash = run_shadow(&shadow, project, &["rev-parse", "HEAD"])
-        .unwrap_or_default();
+    let hash = run_shadow(&shadow, project, &["rev-parse", "HEAD"]).unwrap_or_default();
     let short = hash[..hash.len().min(8)].to_string();
     tracing::info!("shadow snapshot '{}': {}", turn_label, short);
     Ok(short)
@@ -183,17 +222,33 @@ pub fn shadow_restore(project: &Path, snapshot: &str) -> Result<()> {
     let hash = if snapshot.chars().all(|c| c.is_ascii_hexdigit()) {
         snapshot.to_string()
     } else {
-        run_shadow(&shadow, project,
-            &["log", "--oneline", "--all", &format!("--grep={}", snapshot), "-1"])
-            .unwrap_or_default()
-            .split_whitespace().next().unwrap_or(snapshot).to_string()
+        run_shadow(
+            &shadow,
+            project,
+            &[
+                "log",
+                "--oneline",
+                "--all",
+                &format!("--grep={}", snapshot),
+                "-1",
+            ],
+        )
+        .unwrap_or_default()
+        .split_whitespace()
+        .next()
+        .unwrap_or(snapshot)
+        .to_string()
     };
 
     let out = shadow_cmd(&shadow, project)
         .args(["checkout", &hash, "--", "."])
-        .output().context("shadow restore")?;
+        .output()
+        .context("shadow restore")?;
     if !out.status.success() {
-        bail!("shadow restore failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "shadow restore failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     tracing::info!("shadow restored to {}", &hash[..hash.len().min(8)]);
     Ok(())
@@ -202,29 +257,43 @@ pub fn shadow_restore(project: &Path, snapshot: &str) -> Result<()> {
 /// List recent snapshots (newest first).
 pub fn shadow_log(project: &Path, limit: usize) -> Result<Vec<SnapshotEntry>> {
     let shadow = shadow_git_dir(project);
-    if !shadow.join("HEAD").exists() { return Ok(vec![]); }
+    if !shadow.join("HEAD").exists() {
+        return Ok(vec![]);
+    }
 
-    let raw = run_shadow(&shadow, project,
-        &["log", "--format=%h|%s|%cr", &format!("-{}", limit)])
-        .unwrap_or_default();
+    let raw = run_shadow(
+        &shadow,
+        project,
+        &["log", "--format=%h|%s|%cr", &format!("-{}", limit)],
+    )
+    .unwrap_or_default();
 
-    Ok(raw.lines().filter_map(|line| {
-        let p: Vec<&str> = line.splitn(3, '|').collect();
-        (p.len() >= 2).then(|| SnapshotEntry {
-            hash:  p[0].to_string(),
-            label: p[1].to_string(),
-            age:   p.get(2).copied().unwrap_or("").to_string(),
+    Ok(raw
+        .lines()
+        .filter_map(|line| {
+            let p: Vec<&str> = line.splitn(3, '|').collect();
+            (p.len() >= 2).then(|| SnapshotEntry {
+                hash: p[0].to_string(),
+                label: p[1].to_string(),
+                age: p.get(2).copied().unwrap_or("").to_string(),
+            })
         })
-    }).collect())
+        .collect())
 }
 
 /// Revert to the Nth "before-" snapshot (undo N turns).
 pub fn shadow_revert_turns(project: &Path, turns: usize) -> Result<()> {
     let entries = shadow_log(project, turns * 2 + 4)?;
-    let befores: Vec<_> = entries.iter().filter(|e| e.label.starts_with("before-")).collect();
+    let befores: Vec<_> = entries
+        .iter()
+        .filter(|e| e.label.starts_with("before-"))
+        .collect();
     let target = befores.get(turns.saturating_sub(1)).ok_or_else(|| {
-        anyhow::anyhow!("不够 {} 轮可以撤销（仅有 {} 个 before- 快照）",
-                        turns, befores.len())
+        anyhow::anyhow!(
+            "不够 {} 轮可以撤销（仅有 {} 个 before- 快照）",
+            turns,
+            befores.len()
+        )
     })?;
     shadow_restore(project, &target.hash)
 }

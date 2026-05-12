@@ -18,10 +18,10 @@ use crate::keystore::KeyStore;
 /// The AI reads this file automatically at the start of every session.
 fn generate_agents_md_template() -> String {
     // Try to detect project type for a more helpful template
-    let is_rust   = std::path::Path::new("Cargo.toml").exists();
+    let is_rust = std::path::Path::new("Cargo.toml").exists();
     let is_python = std::path::Path::new("pyproject.toml").exists()
-                 || std::path::Path::new("setup.py").exists();
-    let is_node   = std::path::Path::new("package.json").exists();
+        || std::path::Path::new("setup.py").exists();
+    let is_node = std::path::Path::new("package.json").exists();
 
     let lang_rules = if is_rust {
         "- Always use `anyhow::Result` for error handling\n\
@@ -71,7 +71,15 @@ fn generate_agents_md_template() -> String {
          ## Notes\n\
          - (Add any other context the AI should know about this project)\n",
         lang_rules,
-        if is_rust { "cargo test" } else if is_python { "pytest" } else if is_node { "npm test" } else { "see README" }
+        if is_rust {
+            "cargo test"
+        } else if is_python {
+            "pytest"
+        } else if is_node {
+            "npm test"
+        } else {
+            "see README"
+        }
     )
 }
 
@@ -108,11 +116,18 @@ pub async fn run_init() -> Result<()> {
         .context("URL input cancelled")?;
 
     config.llm.base_url = if base_url.trim().is_empty() {
-        None  // litellm will use each model's default endpoint
+        None // litellm will use each model's default endpoint
     } else {
         Some(base_url.trim().to_string())
     };
-    println!("  ✓  Endpoint: {}", config.llm.base_url.as_deref().unwrap_or("(auto from model name)"));
+    println!(
+        "  ✓  Endpoint: {}",
+        config
+            .llm
+            .base_url
+            .as_deref()
+            .unwrap_or("(auto from model name)")
+    );
     println!();
 
     // ── Step 2: API Key ───────────────────────────────────
@@ -122,7 +137,10 @@ pub async fn run_init() -> Result<()> {
     println!();
 
     // Detect a reasonable service name for keyring storage
-    let keyring_service = config.llm.base_url.as_deref()
+    let keyring_service = config
+        .llm
+        .base_url
+        .as_deref()
         .and_then(|url| url.split("//").nth(1))
         .and_then(|host| host.split('/').next())
         .unwrap_or("default");
@@ -156,8 +174,11 @@ pub async fn run_init() -> Result<()> {
 
     let fast_prompt = format!(
         "  Fast model{}",
-        if config.llm.tiers.fast.is_empty() { " (e.g. gpt-4o-mini, deepseek-chat, qwen2.5-coder:7b)".to_string() }
-        else { format!(" [{}]", config.llm.tiers.fast) }
+        if config.llm.tiers.fast.is_empty() {
+            " (e.g. gpt-4o-mini, deepseek-chat, qwen2.5-coder:7b)".to_string()
+        } else {
+            format!(" [{}]", config.llm.tiers.fast)
+        }
     );
     let fast: String = Input::new()
         .with_prompt(fast_prompt)
@@ -168,8 +189,11 @@ pub async fn run_init() -> Result<()> {
 
     let smart_prompt = format!(
         "  Smart model{}",
-        if config.llm.tiers.smart.is_empty() { " (e.g. gpt-4o, deepseek-reasoner, qwen2.5-coder:32b)".to_string() }
-        else { format!(" [{}]", config.llm.tiers.smart) }
+        if config.llm.tiers.smart.is_empty() {
+            " (e.g. gpt-4o, deepseek-reasoner, qwen2.5-coder:32b)".to_string()
+        } else {
+            format!(" [{}]", config.llm.tiers.smart)
+        }
     );
     let smart: String = Input::new()
         .with_prompt(smart_prompt)
@@ -178,7 +202,10 @@ pub async fn run_init() -> Result<()> {
         .interact_text()
         .context("Smart model input cancelled")?;
 
-    config.llm.tiers = LlmTiers { fast: fast.trim().to_string(), smart: smart.trim().to_string() };
+    config.llm.tiers = LlmTiers {
+        fast: fast.trim().to_string(),
+        smart: smart.trim().to_string(),
+    };
     println!("  ✓  fast  = {}", config.llm.tiers.fast);
     println!("  ✓  smart = {}", config.llm.tiers.smart);
     println!();
@@ -186,7 +213,8 @@ pub async fn run_init() -> Result<()> {
     // ── Step 3.5: Test connectivity ───────────────────────
     println!("[3.5/6] Testing connectivity...");
     let endpoint_host = config.llm.base_url.as_deref().unwrap_or("api.openai.com");
-    let host = endpoint_host.trim_start_matches("https://")
+    let host = endpoint_host
+        .trim_start_matches("https://")
         .trim_start_matches("http://")
         .split('/')
         .next()
@@ -214,10 +242,7 @@ pub async fn run_init() -> Result<()> {
     }
 
     let project_evocli = std::path::Path::new(".evocli");
-    let project_dirs = [
-        project_evocli.to_path_buf(),
-        project_evocli.join("skills"),
-    ];
+    let project_dirs = [project_evocli.to_path_buf(), project_evocli.join("skills")];
     for dir in &project_dirs {
         if let Err(e) = std::fs::create_dir_all(dir) {
             tracing::warn!("Could not create project dir {}: {}", dir.display(), e);
@@ -231,12 +256,19 @@ pub async fn run_init() -> Result<()> {
     println!("Step 5/6 — Setting up managed Python runtime (uv)");
     println!("  This installs a private Python 3.11 — independent of system Python.");
     // B3 FIX: 使用 exe 相对路径查找 soul dir，适配 dist/ 场景
-    let soul_exe   = crate::find_soul_dir_relative_to_exe();
-    let soul_cwd   = std::path::PathBuf::from("evocli-soul");
-    let soul_arg: Option<&std::path::Path> = soul_exe.as_ref()
+    let soul_exe = crate::find_soul_dir_relative_to_exe();
+    let soul_cwd = std::path::PathBuf::from("evocli-soul");
+    let soul_arg: Option<&std::path::Path> = soul_exe
+        .as_ref()
         .filter(|p| p.exists())
         .map(|p| p.as_path())
-        .or_else(|| if soul_cwd.exists() { Some(&soul_cwd) } else { None });
+        .or_else(|| {
+            if soul_cwd.exists() {
+                Some(&soul_cwd)
+            } else {
+                None
+            }
+        });
     match crate::python_manager::PythonManager::setup(soul_arg) {
         Ok(py) => {
             config.soul_script = Some("evocli_soul.main".to_string());
@@ -292,7 +324,12 @@ pub async fn run_init() -> Result<()> {
             match std::fs::write("AGENTS.md", &template) {
                 Ok(()) => {
                     println!("  ✓ Created AGENTS.md — edit it to add your project rules.");
-                    println!("  → Location: {}", std::env::current_dir().map(|d| d.join("AGENTS.md").display().to_string()).unwrap_or("AGENTS.md".into()));
+                    println!(
+                        "  → Location: {}",
+                        std::env::current_dir()
+                            .map(|d| d.join("AGENTS.md").display().to_string())
+                            .unwrap_or("AGENTS.md".into())
+                    );
                 }
                 Err(e) => {
                     println!("  ⚠ Could not create AGENTS.md: {}", e);
@@ -346,8 +383,18 @@ fn run_verification_check(soul_path: &str) -> bool {
     let (args, pythonpath): (Vec<String>, Option<String>) = if soul_path.ends_with(".py") {
         let p = std::path::Path::new(soul_path);
         if let (Some(pkg_dir), Some(stem)) = (p.parent(), p.file_stem()) {
-            let module = format!("{}.{}", pkg_dir.file_name().and_then(|n| n.to_str()).unwrap_or("evocli_soul"), stem.to_str().unwrap_or("main"));
-            let pp = pkg_dir.parent().and_then(|pp| std::fs::canonicalize(pp).ok()).map(|pb| pb.to_string_lossy().to_string());
+            let module = format!(
+                "{}.{}",
+                pkg_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("evocli_soul"),
+                stem.to_str().unwrap_or("main")
+            );
+            let pp = pkg_dir
+                .parent()
+                .and_then(|pp| std::fs::canonicalize(pp).ok())
+                .map(|pb| pb.to_string_lossy().to_string());
             (vec!["-u".into(), "-m".into(), module], pp)
         } else {
             (vec!["-u".into(), soul_path.to_string()], None)
@@ -358,10 +405,10 @@ fn run_verification_check(soul_path: &str) -> bool {
 
     let mut cmd = std::process::Command::new(&py);
     cmd.args(args.iter().map(|s| s.as_str()))
-       .stdin(std::process::Stdio::piped())
-       .stdout(std::process::Stdio::piped())
-       .stderr(std::process::Stdio::piped())
-       .env("PYTHONIOENCODING", "utf-8");
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("PYTHONIOENCODING", "utf-8");
     if let Some(ref pp) = pythonpath {
         cmd.env("PYTHONPATH", pp);
     }
@@ -393,7 +440,9 @@ fn run_verification_check(soul_path: &str) -> bool {
         use std::io::BufRead;
         let reader = std::io::BufReader::new(stdout);
         for line in reader.lines() {
-            if start.elapsed() > timeout { break; }
+            if start.elapsed() > timeout {
+                break;
+            }
             if let Ok(line) = line {
                 buf.push_str(&line);
                 if line.contains("pong") || line.contains("\"result\"") {
@@ -412,7 +461,10 @@ fn run_verification_check(soul_path: &str) -> bool {
     } else {
         // char-based truncation: Soul output may contain non-ASCII characters in error messages
         let buf_display: String = buf.chars().take(100).collect();
-        println!("  ⚠  Soul did not respond in time (response: {:?})", buf_display);
+        println!(
+            "  ⚠  Soul did not respond in time (response: {:?})",
+            buf_display
+        );
         println!("    Run `evocli doctor` to diagnose.");
     }
     ok
@@ -428,17 +480,26 @@ fn download_embedding_model() {
     let py = python_exe.to_string_lossy().to_string();
 
     // Locate download_models.py: next to the running binary, or next to CWD.
-    let script: Option<std::path::PathBuf> = std::env::current_exe().ok()
+    let script: Option<std::path::PathBuf> = std::env::current_exe()
+        .ok()
         .and_then(|exe| exe.parent().map(|p| p.join("download_models.py")))
         .filter(|p| p.exists())
         .or_else(|| {
             let cwd = std::path::PathBuf::from("download_models.py");
-            if cwd.exists() { Some(cwd) } else { None }
+            if cwd.exists() {
+                Some(cwd)
+            } else {
+                None
+            }
         })
         .or_else(|| {
             // Also try scripts/ subdir (developer checkout)
             let dev = std::path::PathBuf::from("scripts/download_models.py");
-            if dev.exists() { Some(dev) } else { None }
+            if dev.exists() {
+                Some(dev)
+            } else {
+                None
+            }
         });
 
     let status = if let Some(ref script_path) = script {
@@ -488,7 +549,6 @@ print("  done")
     }
 }
 
-
 /// Map each provider to its current recommended fast/smart models.
 ///
 /// These are updated to reflect models available as of 2025.
@@ -497,22 +557,22 @@ fn default_tiers_for(provider: &str) -> LlmTiers {
     match provider {
         "anthropic" => LlmTiers {
             // claude-haiku-4-5 = fast/cheap, claude-sonnet-4-7 = balanced smart
-            fast:  "claude-haiku-4-5".into(),
+            fast: "claude-haiku-4-5".into(),
             smart: "claude-sonnet-4-7".into(),
         },
         "openai" => LlmTiers {
             // gpt-4o-mini = fast, gpt-4o = smart (universally available)
-            fast:  "gpt-4o-mini".into(),
+            fast: "gpt-4o-mini".into(),
             smart: "gpt-4o".into(),
         },
         "deepseek" => LlmTiers {
             // deepseek-chat = fast, deepseek-reasoner = smart (chain-of-thought)
-            fast:  "deepseek-chat".into(),
+            fast: "deepseek-chat".into(),
             smart: "deepseek-reasoner".into(),
         },
         "ollama" => LlmTiers {
             // Local models: small for fast tasks, larger for reasoning
-            fast:  "qwen2.5-coder:7b".into(),
+            fast: "qwen2.5-coder:7b".into(),
             smart: "qwen2.5-coder:32b".into(),
         },
         _ => LlmTiers::default(),
@@ -535,9 +595,11 @@ async fn test_llm_connectivity_simple(host: &str) {
     match tokio::time::timeout(
         Duration::from_secs(5),
         tokio::net::TcpStream::connect(&addr),
-    ).await {
-        Ok(Ok(_))  => println!("✓  reachable"),
+    )
+    .await
+    {
+        Ok(Ok(_)) => println!("✓  reachable"),
         Ok(Err(_)) => println!("⚠  cannot connect (check network/VPN)"),
-        Err(_)     => println!("⚠  timeout (may work behind proxy — continuing)"),
+        Err(_) => println!("⚠  timeout (may work behind proxy — continuing)"),
     }
 }

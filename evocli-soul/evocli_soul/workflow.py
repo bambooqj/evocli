@@ -31,7 +31,7 @@ def get_checkpointer():
         # 架构豁免：LangGraph SqliteSaver 直接管理 ~/.evocli/sessions.db
         # 这是 evocli 内部状态存储（非用户项目文件），属于 ~/.evocli 内部数据豁免范围
         # 不通过 Rust bridge 是因为 LangGraph 内部需要同步 sqlite3 连接
-        import sqlite3  # noqa: architecture-exempt
+        import sqlite3  # noqa: S403
         from langgraph.checkpoint.sqlite import SqliteSaver
         CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
         # from_conn_string() is a context manager in newer versions.
@@ -168,7 +168,7 @@ async def run_skill_with_workflow(skill, bridge, session_id: str | None = None) 
                 approval = await bridge.call("approval.request", {
                     "skill_id": skill.id,
                     "step_id":  interrupt_data[0].get("step", "") if interrupt_data else "",
-                    "message":  f"Skill step requires approval",
+                    "message":  "Skill step requires approval",
                 })
                 if not approval.get("approved", False):
                     return {"ok": False, "error": "User rejected approval", "results": results}

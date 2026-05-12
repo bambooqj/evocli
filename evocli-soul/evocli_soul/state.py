@@ -245,7 +245,7 @@ def get_config() -> dict:
         with _init_lock:
             if _config is None:
                 try:
-                    import tomllib, os as _os
+                    import tomllib
                     from pathlib import Path
 
                     def _read(p: Path) -> dict:

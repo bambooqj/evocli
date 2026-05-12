@@ -13,26 +13,33 @@ use ratatui::text::Line;
 pub enum AppState {
     Idle,
     Thinking,
-    Streaming { tokens_received: usize },
-    SkillRunning {
-        skill_id:     String,
-        skill_name:   String,
-        current_step: usize,
-        total_steps:  usize,
-        step_name:    String,
-        step_status:  StepStatus,
+    Streaming {
+        tokens_received: usize,
     },
-    CallingTool { tool: String, display: String },
-    WaitingApproval { message: String },
+    SkillRunning {
+        skill_id: String,
+        skill_name: String,
+        current_step: usize,
+        total_steps: usize,
+        step_name: String,
+        step_status: StepStatus,
+    },
+    CallingTool {
+        tool: String,
+        display: String,
+    },
+    WaitingApproval {
+        message: String,
+    },
     /// Interactive choice prompt — AI presents N options, user picks one
     /// or enters custom text (when allow_custom = true).
     WaitingChoice {
-        title:        String,
-        options:      Vec<ChoiceItem>,
+        title: String,
+        options: Vec<ChoiceItem>,
         selected_idx: usize,
         allow_custom: bool,
         custom_input: String,
-        custom_mode:  bool,   // true = user typing custom answer
+        custom_mode: bool, // true = user typing custom answer
     },
     Error(String),
 }
@@ -40,7 +47,7 @@ pub enum AppState {
 /// A single option in a WaitingChoice prompt.
 #[derive(Debug, Clone)]
 pub struct ChoiceItem {
-    pub id:    String,
+    pub id: String,
     pub label: String,
 }
 
@@ -59,69 +66,69 @@ pub enum ChatMessage {
     User(String),
     Assistant {
         content: String,
-        model:   String,
-        tokens:  usize,
+        model: String,
+        tokens: usize,
     },
     System(String),
     /// P1-5: Skill 执行结果摘要
     SkillResult {
         skill_id: String,
-        ok:       bool,
-        steps:    usize,
-        summary:  String,
+        ok: bool,
+        steps: usize,
+        summary: String,
     },
     /// P3-1: 调用链面板
     CallChain {
-        symbol:   String,
-        file:     String,
-        line:     u32,
+        symbol: String,
+        file: String,
+        line: u32,
         incoming: Vec<String>,
         outgoing: Vec<String>,
     },
     /// FIX-B: 工具调用通知（内联显示在对话中）
     ToolCall {
-        tool:    String,
+        tool: String,
         display: String,
-        ok:      Option<bool>,   // None=进行中, Some(true)=成功, Some(false)=失败
+        ok: Option<bool>, // None=进行中, Some(true)=成功, Some(false)=失败
     },
 }
 
 /// Main application state
 pub struct App {
-    pub messages:       Vec<ChatMessage>,
-    pub state:          AppState,
+    pub messages: Vec<ChatMessage>,
+    pub state: AppState,
     /// Session-accumulated totals (for /cost command display).
     /// tokens_input grows with each turn since it includes the full prompt+history.
-    pub tokens_used:    usize,
-    pub tokens_input:   usize,
-    pub tokens_output:  usize,
+    pub tokens_used: usize,
+    pub tokens_input: usize,
+    pub tokens_output: usize,
     pub session_cost_usd: f64,
     /// Current context window occupancy — SET (not accumulated) from the last
     /// cost_update event's input_tokens. This is what the token bar should display:
     /// "how full is my context window RIGHT NOW?"
     pub current_ctx_tokens: usize,
     /// Last turn's output token count (SET each cost_update, for ↓ display).
-    pub last_out_tokens:    usize,
-    pub model_name:     String,
-    pub project_dir:    String,
+    pub last_out_tokens: usize,
+    pub model_name: String,
+    pub project_dir: String,
     /// Scroll offset in lines. 0=top (oldest), usize::MAX=bottom (clamped in ui.rs).
     /// Using usize (not u16) to support >65535 total cached lines without overflow.
-    pub scroll:         usize,
-    pub should_quit:    bool,
+    pub scroll: usize,
+    pub should_quit: bool,
     pub cursor_visible: bool,
     /// Spinner frame counter — incremented each blink tick for smooth animation.
     /// Used by status bar to render animated spinner: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏
-    pub spinner_tick:   u8,
+    pub spinner_tick: u8,
     /// 命令联想：当输入 / 开头时激活
-    pub suggestions:    Vec<(&'static str, &'static str)>,
+    pub suggestions: Vec<(&'static str, &'static str)>,
     pub suggestion_idx: usize,
     pub show_suggestions: bool,
 
     // ── 性能优化：渲染缓存 ──────────────────────────────────────
     /// Pre-computed lines for all messages. Rebuilt only when dirty.
-    pub line_cache:   Option<(u16, Vec<Line<'static>>)>,
+    pub line_cache: Option<(u16, Vec<Line<'static>>)>,
     /// True when messages changed and cache must be rebuilt before next render.
-    pub cache_dirty:  bool,
+    pub cache_dirty: bool,
     /// Streaming throttle: skip redraws for N frames to reduce CPU during fast token emission.
     pub stream_skip_frames: u8,
     /// Last computed max_scroll from draw_chat_area. Used by scroll helpers to
@@ -129,9 +136,9 @@ pub struct App {
     pub last_max_scroll: usize,
 
     // ── Debug overlay (F12) ──────────────────────────────────────
-    pub show_debug:       bool,
-    pub debug_log_lines:  Vec<String>,
-    pub debug_log_path:   String,
+    pub show_debug: bool,
+    pub debug_log_lines: Vec<String>,
+    pub debug_log_path: String,
 
     // ── Message queue ────────────────────────────────────────────
     pub message_queue: std::collections::VecDeque<String>,
@@ -150,14 +157,18 @@ pub struct App {
 
 /// Notification urgency level — controls icon and colour.
 #[derive(Debug, Clone, PartialEq)]
-pub enum NotifLevel { Info, Warn, Error }
+pub enum NotifLevel {
+    Info,
+    Warn,
+    Error,
+}
 
 /// A transient notification shown in the 1-line notification bar.
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub message: String,
-    pub level:   NotifLevel,
-    pub born:    std::time::Instant,
+    pub level: NotifLevel,
+    pub born: std::time::Instant,
 }
 
 /// How long (seconds) a notification stays visible before auto-dismissing.
@@ -168,22 +179,31 @@ pub const STREAM_REDRAW_EVERY: u8 = 3;
 
 /// 所有支持的 / 命令
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help",           "Show available commands and keyboard shortcuts"),
-    ("/?",              "Show available commands (alias)"),
-    ("/compress",       "Compress session history to free context space"),
-    ("/compact",        "Compress session history to free context space (alias)"),
-    ("/flows",          "List automatically learned tool flows"),
-    ("/add <file>",     "Pin a file to context for all turns"),
-    ("/add list",       "Show all pinned files"),
-    ("/add clear",      "Remove all pinned files from context"),
+    ("/help", "Show available commands and keyboard shortcuts"),
+    ("/?", "Show available commands (alias)"),
+    (
+        "/compress",
+        "Compress session history to free context space",
+    ),
+    (
+        "/compact",
+        "Compress session history to free context space (alias)",
+    ),
+    ("/flows", "List automatically learned tool flows"),
+    ("/add <file>", "Pin a file to context for all turns"),
+    ("/add list", "Show all pinned files"),
+    ("/add clear", "Remove all pinned files from context"),
     ("/chain <symbol>", "Show call chain for a code symbol"),
-    ("/skills",         "List available skills"),
-    ("/skill <name>",   "Run a skill by name"),
-    ("/cost",           "Show session cost and token usage"),
-    ("/index",          "Re-index current project"),
+    ("/skills", "List available skills"),
+    ("/skill <name>", "Run a skill by name"),
+    ("/cost", "Show session cost and token usage"),
+    ("/index", "Re-index current project"),
     ("/memory <query>", "Search project memory"),
-    ("/clear",          "Clear chat history"),
-    ("/log [N]",        "Show last N lines from the log file (default 30)"),
+    ("/clear", "Clear chat history"),
+    (
+        "/log [N]",
+        "Show last N lines from the log file (default 30)",
+    ),
 ];
 
 impl App {
@@ -211,34 +231,38 @@ impl App {
 
         Self {
             messages: vec![ChatMessage::System(
-                "Welcome to EvoCLI! Type a message and press Enter to send.  Type / for commands.".into(),
+                "Welcome to EvoCLI! Type a message and press Enter to send.  Type / for commands."
+                    .into(),
             )],
-            state:            AppState::Idle,
-            tokens_used:      0,
-            tokens_input:     0,
-            tokens_output:    0,
+            state: AppState::Idle,
+            tokens_used: 0,
+            tokens_input: 0,
+            tokens_output: 0,
             session_cost_usd: 0.0,
             current_ctx_tokens: 0,
-            last_out_tokens:    0,
+            last_out_tokens: 0,
             model_name,
             project_dir,
-            scroll:           0,
-            should_quit:      false,
-            cursor_visible:   true,
-            spinner_tick:     0,
-            suggestions:      vec![],
-            suggestion_idx:   0,
+            scroll: 0,
+            should_quit: false,
+            cursor_visible: true,
+            spinner_tick: 0,
+            suggestions: vec![],
+            suggestion_idx: 0,
             show_suggestions: false,
-            line_cache:       None,
-            cache_dirty:      true,
+            line_cache: None,
+            cache_dirty: true,
             stream_skip_frames: 0,
-            last_max_scroll:  0,
-            show_debug:       false,
-            debug_log_lines:  vec![],
+            last_max_scroll: 0,
+            show_debug: false,
+            debug_log_lines: vec![],
             debug_log_path: dirs::home_dir()
                 .unwrap_or_default()
-                .join(".evocli").join("logs").join("evocli.log")
-                .to_string_lossy().to_string(),
+                .join(".evocli")
+                .join("logs")
+                .join("evocli.log")
+                .to_string_lossy()
+                .to_string(),
             message_queue: std::collections::VecDeque::new(),
             request_start: None,
             max_context_tokens,
@@ -253,7 +277,8 @@ impl App {
             return;
         }
         let input_lower = input.to_lowercase();
-        self.suggestions = SLASH_COMMANDS.iter()
+        self.suggestions = SLASH_COMMANDS
+            .iter()
             .filter(|(cmd, _)| cmd.to_lowercase().starts_with(&input_lower))
             .copied()
             .collect();
@@ -271,7 +296,8 @@ impl App {
 
     pub fn suggestion_prev(&mut self) {
         if !self.suggestions.is_empty() {
-            self.suggestion_idx = self.suggestion_idx
+            self.suggestion_idx = self
+                .suggestion_idx
                 .checked_sub(1)
                 .unwrap_or(self.suggestions.len() - 1);
         }
@@ -302,10 +328,10 @@ impl App {
         self.state = AppState::Streaming { tokens_received: 0 };
         self.messages.push(ChatMessage::Assistant {
             content: String::new(),
-            model:   self.model_name.clone(),
-            tokens:  0,
+            model: self.model_name.clone(),
+            tokens: 0,
         });
-        self.scroll = usize::MAX;  // auto-scroll to bottom (clamped in ui.rs)
+        self.scroll = usize::MAX; // auto-scroll to bottom (clamped in ui.rs)
         self.cache_dirty = true;
         self.stream_skip_frames = 0;
     }
@@ -315,7 +341,8 @@ impl App {
         // We cannot use messages.last_mut() because soul_status / event messages
         // may be pushed AFTER start_streaming() creates the Assistant placeholder,
         // which would make last_mut() return a System message instead.
-        if let Some(ChatMessage::Assistant { content, .. }) = self.messages
+        if let Some(ChatMessage::Assistant { content, .. }) = self
+            .messages
             .iter_mut()
             .rev()
             .find(|m| matches!(m, ChatMessage::Assistant { .. }))
@@ -346,7 +373,10 @@ impl App {
         // counting with cost_update. The message badge is updated once cost_update
         // arrives with accurate numbers.
         let content_empty = {
-            if let Some(ChatMessage::Assistant { tokens: t, content, .. }) = self.messages
+            if let Some(ChatMessage::Assistant {
+                tokens: t, content, ..
+            }) = self
+                .messages
                 .iter_mut()
                 .rev()
                 .find(|m| matches!(m, ChatMessage::Assistant { .. }))
@@ -376,14 +406,16 @@ impl App {
         self.state = AppState::Idle;
         self.stream_skip_frames = 0;
         self.cache_dirty = true;
-        self.request_start = None;  // clear timer
+        self.request_start = None; // clear timer
 
         const MAX_MESSAGES: usize = 500;
         if self.messages.len() > MAX_MESSAGES {
             let excess = self.messages.len() - MAX_MESSAGES;
             let mut removed = 0usize;
             self.messages.retain(|m| {
-                if removed >= excess { return true; }
+                if removed >= excess {
+                    return true;
+                }
                 if matches!(m, ChatMessage::User(_) | ChatMessage::Assistant { .. }) {
                     removed += 1;
                     false
@@ -398,19 +430,23 @@ impl App {
 
     pub fn start_skill(&mut self, skill_id: &str, skill_name: &str, total_steps: usize) {
         self.state = AppState::SkillRunning {
-            skill_id:     skill_id.to_string(),
-            skill_name:   skill_name.to_string(),
+            skill_id: skill_id.to_string(),
+            skill_name: skill_name.to_string(),
             current_step: 0,
             total_steps,
-            step_name:    "initializing".to_string(),
-            step_status:  StepStatus::Running,
+            step_name: "initializing".to_string(),
+            step_status: StepStatus::Running,
         };
     }
 
     pub fn update_skill_step(&mut self, step_idx: usize, step_name: &str, status: StepStatus) {
         if let AppState::SkillRunning {
-            current_step, step_name: sn, step_status, ..
-        } = &mut self.state {
+            current_step,
+            step_name: sn,
+            step_status,
+            ..
+        } = &mut self.state
+        {
             *current_step = step_idx;
             *sn = step_name.to_string();
             *step_status = status;
@@ -437,7 +473,7 @@ impl App {
     /// usize::MAX - N is still larger than max_scroll and nothing moves visually.
     pub fn scroll_up_n(&mut self, n: usize) {
         let current = if self.scroll >= self.last_max_scroll {
-            self.last_max_scroll   // anchor from actual bottom
+            self.last_max_scroll // anchor from actual bottom
         } else {
             self.scroll
         };
@@ -447,23 +483,35 @@ impl App {
     /// Scroll down by N visual rows. Re-engages follow-bottom at end.
     pub fn scroll_down_n(&mut self, n: usize) {
         if self.scroll >= self.last_max_scroll {
-            return;  // already at bottom
+            return; // already at bottom
         }
         let next = self.scroll.saturating_add(n);
-        self.scroll = if next >= self.last_max_scroll { usize::MAX } else { next };
+        self.scroll = if next >= self.last_max_scroll {
+            usize::MAX
+        } else {
+            next
+        };
     }
 
     /// PgUp — scroll up 3 rows (keyboard shortcut).
-    pub fn scroll_up(&mut self) { self.scroll_up_n(3); }
+    pub fn scroll_up(&mut self) {
+        self.scroll_up_n(3);
+    }
 
     /// PgDn — scroll down 3 rows (keyboard shortcut).
-    pub fn scroll_down(&mut self) { self.scroll_down_n(3); }
+    pub fn scroll_down(&mut self) {
+        self.scroll_down_n(3);
+    }
 
     /// Alt+Up — fast scroll up (5 lines).
-    pub fn scroll_fast_up(&mut self) { self.scroll_up_n(5); }
+    pub fn scroll_fast_up(&mut self) {
+        self.scroll_up_n(5);
+    }
 
     /// Alt+Down — fast scroll down (5 lines).
-    pub fn scroll_fast_down(&mut self) { self.scroll_down_n(5); }
+    pub fn scroll_fast_down(&mut self) {
+        self.scroll_down_n(5);
+    }
 
     /// Ctrl+Home / Home — scroll to top (oldest messages).
     pub fn scroll_to_top(&mut self) {
@@ -472,7 +520,7 @@ impl App {
 
     /// Ctrl+End / End — scroll to bottom (newest messages).
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll = usize::MAX;  // clamped to max_scroll in draw_chat_area
+        self.scroll = usize::MAX; // clamped to max_scroll in draw_chat_area
     }
 
     /// Extract the plain text of the last Assistant message (for clipboard copy).
@@ -494,7 +542,8 @@ impl App {
     /// Copy the last Assistant message to the system clipboard via arboard.
     /// Returns Ok(chars_copied) on success, Err(description) on failure.
     pub fn copy_last_message_to_clipboard(&self) -> Result<usize, String> {
-        let text = self.last_assistant_text()
+        let text = self
+            .last_assistant_text()
             .ok_or_else(|| "No AI message to copy".to_string())?;
         let len = text.chars().count();
         arboard::Clipboard::new()
@@ -519,13 +568,18 @@ impl App {
             Ok(mut f) => {
                 let size = f.metadata().map(|m| m.len()).unwrap_or(0);
                 let offset = size.saturating_sub(MAX_READ);
-                if offset > 0 { let _ = f.seek(SeekFrom::Start(offset)); }
+                if offset > 0 {
+                    let _ = f.seek(SeekFrom::Start(offset));
+                }
                 let mut buf = Vec::new();
                 let _ = f.read_to_end(&mut buf);
                 let text = String::from_utf8_lossy(&buf);
                 text.lines()
-                    .rev().take(n).collect::<Vec<_>>()
-                    .into_iter().rev()
+                    .rev()
+                    .take(n)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
                     .map(|s| s.to_string())
                     .collect()
             }
@@ -535,17 +589,24 @@ impl App {
 
     pub fn status_text(&self) -> String {
         match &self.state {
-            AppState::Idle                    => "Idle".into(),
-            AppState::Thinking                => "Thinking...".into(),
-            AppState::Streaming { tokens_received } =>
-                format!("Streaming... ({tokens_received} tokens)"),
-            AppState::CallingTool { display, .. } =>
-                format!("⚙ {display}"),
-            AppState::WaitingApproval { .. }  => "🔐 Waiting for approval (y/n)...".into(),
-            AppState::WaitingChoice { .. }    => "⌨ Waiting for your choice...".into(),
-            AppState::SkillRunning { skill_name, current_step, total_steps, .. } =>
-                format!("Skill: {skill_name}  step {}/{total_steps}", current_step + 1),
-            AppState::Error(msg)              => format!("Error: {msg}"),
+            AppState::Idle => "Idle".into(),
+            AppState::Thinking => "Thinking...".into(),
+            AppState::Streaming { tokens_received } => {
+                format!("Streaming... ({tokens_received} tokens)")
+            }
+            AppState::CallingTool { display, .. } => format!("⚙ {display}"),
+            AppState::WaitingApproval { .. } => "🔐 Waiting for approval (y/n)...".into(),
+            AppState::WaitingChoice { .. } => "⌨ Waiting for your choice...".into(),
+            AppState::SkillRunning {
+                skill_name,
+                current_step,
+                total_steps,
+                ..
+            } => format!(
+                "Skill: {skill_name}  step {}/{total_steps}",
+                current_step + 1
+            ),
+            AppState::Error(msg) => format!("Error: {msg}"),
         }
     }
 

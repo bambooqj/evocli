@@ -4,8 +4,8 @@
 /// evocli mcp connect <name> <cmd>    注册并测试连接一个 MCP server
 /// evocli mcp tools <name>            列出指定 server 暴露的工具
 /// evocli mcp call <server> <tool>    调用单个工具（测试用）
- /// evocli mcp serve                   作为 stdin/stdout JSON-RPC MCP server 运行 EvoCLI 内置工具
- /// evocli mcp expose                  输出 EvoCLI 内置工具的 MCP server 配置（tools 定义）
+/// evocli mcp serve                   作为 stdin/stdout JSON-RPC MCP server 运行 EvoCLI 内置工具
+/// evocli mcp expose                  输出 EvoCLI 内置工具的 MCP server 配置（tools 定义）
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
@@ -30,9 +30,19 @@ use clap::Subcommand;
 ///   tool_*       → tool.*
 fn mcp_name_to_dispatch(mcp_name: &str) -> String {
     const NAMESPACES: &[&str] = &[
-        "code_intel",  // must be before any single-word prefix
-        "fs", "git", "shell", "search", "memory", "symbol",
-        "assume", "impact", "equiv", "verify", "approval", "tool",
+        "code_intel", // must be before any single-word prefix
+        "fs",
+        "git",
+        "shell",
+        "search",
+        "memory",
+        "symbol",
+        "assume",
+        "impact",
+        "equiv",
+        "verify",
+        "approval",
+        "tool",
     ];
     for ns in NAMESPACES {
         let prefix = format!("{}_", ns);
@@ -50,19 +60,24 @@ fn mcp_name_to_dispatch(mcp_name: &str) -> String {
 use std::path::PathBuf;
 
 fn mcp_config_path() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".evocli").join("mcp_servers.json")
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".evocli")
+        .join("mcp_servers.json")
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct McpServerConfig {
-    name:    String,
+    name: String,
     program: String,
-    args:    Vec<String>,
+    args: Vec<String>,
 }
 
 fn load_servers() -> Vec<McpServerConfig> {
     let path = mcp_config_path();
-    if !path.exists() { return vec![]; }
+    if !path.exists() {
+        return vec![];
+    }
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -71,7 +86,9 @@ fn load_servers() -> Vec<McpServerConfig> {
 
 fn save_servers(servers: &[McpServerConfig]) -> Result<()> {
     let path = mcp_config_path();
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&path, serde_json::to_string_pretty(servers)?)?;
     Ok(())
 }
@@ -96,9 +113,7 @@ pub enum McpAction {
         name: String,
     },
     /// Remove a registered MCP server
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Show EvoCLI tools in MCP server format (for use by external AI clients)
     Expose,
     /// Run EvoCLI as an MCP server (stdin/stdout JSON-RPC)
@@ -107,12 +122,16 @@ pub enum McpAction {
 
 pub fn run(action: McpAction) -> Result<()> {
     match action {
-        McpAction::List    => cmd_list(),
-        McpAction::Connect { name, program, args } => cmd_connect(&name, &program, &args),
-        McpAction::Tools   { name }                => cmd_tools(&name),
-        McpAction::Remove  { name }                => cmd_remove(&name),
-        McpAction::Expose                          => cmd_expose(),
-        McpAction::Serve                           => cmd_serve(),
+        McpAction::List => cmd_list(),
+        McpAction::Connect {
+            name,
+            program,
+            args,
+        } => cmd_connect(&name, &program, &args),
+        McpAction::Tools { name } => cmd_tools(&name),
+        McpAction::Remove { name } => cmd_remove(&name),
+        McpAction::Expose => cmd_expose(),
+        McpAction::Serve => cmd_serve(),
     }
 }
 
@@ -125,7 +144,9 @@ fn cmd_list() -> Result<()> {
         println!("Register one: evocli mcp connect <name> <program> [args...]");
         println!();
         println!("Examples:");
-        println!("  evocli mcp connect filesystem npx -- -y @modelcontextprotocol/server-filesystem .");
+        println!(
+            "  evocli mcp connect filesystem npx -- -y @modelcontextprotocol/server-filesystem ."
+        );
         println!("  evocli mcp connect git        uvx -- mcp-server-git --repository .");
         return Ok(());
     }
@@ -135,10 +156,17 @@ fn cmd_list() -> Result<()> {
         let cmd = format!("{} {}", s.program, s.args.join(" "));
         // char-based truncation: MCP commands can contain Unicode paths/args
         let cmd_display: String = cmd.chars().take(40).collect();
-        let cmd_str = if cmd.chars().count() > 40 { format!("{}…", cmd_display) } else { cmd };
+        let cmd_str = if cmd.chars().count() > 40 {
+            format!("{}…", cmd_display)
+        } else {
+            cmd
+        };
         println!("  {:<20} {}", s.name, cmd_str);
     }
-    println!("\n  {} server(s). Use `evocli mcp tools <name>` to see tools.\n", servers.len());
+    println!(
+        "\n  {} server(s). Use `evocli mcp tools <name>` to see tools.\n",
+        servers.len()
+    );
     Ok(())
 }
 
@@ -155,7 +183,7 @@ fn cmd_connect(name: &str, program: &str, args: &[String]) -> Result<()> {
     let result = rt.block_on(async {
         let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let client = mcp::McpClient::connect_stdio(program, &args_str).await?;
-        let tools  = client.list_tools().await?;
+        let tools = client.list_tools().await?;
         Ok::<Vec<mcp::McpTool>, anyhow::Error>(tools)
     });
 
@@ -168,22 +196,27 @@ fn cmd_connect(name: &str, program: &str, args: &[String]) -> Result<()> {
                 let desc_display: String = desc.chars().take(50).collect();
                 println!("    • {:<30} {}", t.name, desc_display);
             }
-            if tools.len() > 10 { println!("    ... and {} more", tools.len() - 10); }
+            if tools.len() > 10 {
+                println!("    ... and {} more", tools.len() - 10);
+            }
 
             // Save to config
             let mut servers = load_servers();
             servers.retain(|s| s.name != name);
             servers.push(McpServerConfig {
-                name:    name.to_string(),
+                name: name.to_string(),
                 program: program.to_string(),
-                args:    args.to_vec(),
+                args: args.to_vec(),
             });
             save_servers(&servers)?;
             println!("\n  Saved to {}", mcp_config_path().display());
         }
         Err(e) => {
             println!("  ❌ Connection failed: {}", e);
-            println!("  Make sure '{}' is installed and the server starts correctly.", program);
+            println!(
+                "  Make sure '{}' is installed and the server starts correctly.",
+                program
+            );
         }
     }
     Ok(())
@@ -193,7 +226,9 @@ fn cmd_connect(name: &str, program: &str, args: &[String]) -> Result<()> {
 
 fn cmd_tools(name: &str) -> Result<()> {
     let servers = load_servers();
-    let server  = servers.iter().find(|s| s.name == name)
+    let server = servers
+        .iter()
+        .find(|s| s.name == name)
         .with_context(|| format!("Server '{}' not found. Run: evocli mcp list", name))?;
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -256,16 +291,19 @@ fn cmd_expose() -> Result<()> {
 /// ```
 /// to their MCP server configuration.
 fn cmd_serve() -> Result<()> {
-    use std::io::{BufRead, BufReader, Write};
     use serde_json::json;
+    use std::io::{BufRead, BufReader, Write};
 
     let cfg = crate::config::Config::load_or_default().unwrap_or_default();
-    eprintln!("[EvoCLI MCP] Server v{} starting on stdin/stdout", env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "[EvoCLI MCP] Server v{} starting on stdin/stdout",
+        env!("CARGO_PKG_VERSION")
+    );
 
-    let stdin  = std::io::stdin();
+    let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let reader  = BufReader::new(stdin.lock());
+    let reader = BufReader::new(stdin.lock());
     let mut req_counter: u64 = 0;
 
     // Helper: write a JSON-RPC response line
@@ -279,19 +317,21 @@ fn cmd_serve() -> Result<()> {
     for raw in reader.lines() {
         let raw = raw.context("stdin read error")?;
         let raw = raw.trim();
-        if raw.is_empty() { continue; }
+        if raw.is_empty() {
+            continue;
+        }
 
         let msg: serde_json::Value = match serde_json::from_str(raw) {
-            Ok(v)  => v,
+            Ok(v) => v,
             Err(e) => {
                 eprintln!("[EvoCLI MCP] JSON parse error: {}", e);
                 continue;
             }
         };
 
-        let method  = msg["method"].as_str().unwrap_or("").to_string();
-        let id      = msg.get("id").cloned();
-        let params  = msg.get("params").cloned().unwrap_or(json!({}));
+        let method = msg["method"].as_str().unwrap_or("").to_string();
+        let id = msg.get("id").cloned();
+        let params = msg.get("params").cloned().unwrap_or(json!({}));
 
         match method.as_str() {
             // MCP handshake: respond with server capabilities
@@ -342,18 +382,22 @@ fn cmd_serve() -> Result<()> {
                     tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(async {
                             let tc_req = soul_bridge::ToolCallRequest {
-                                id:   req_id.clone(),
+                                id: req_id.clone(),
                                 tool: dispatch_tool.clone(),
                                 args: arguments.clone(),
                             };
-                            crate::tool_dispatch::dispatch(&tc_req, None, &cfg).await
+                            crate::tool_dispatch::dispatch(&tc_req, None, &cfg)
+                                .await
                                 .map_err(|e| e.to_string())
                         })
                     });
 
                 let (content, is_error) = match tool_result {
-                    Ok(val)  => (json!([{"type": "text", "text": val.to_string()}]), false),
-                    Err(err) => (json!([{"type": "text", "text": format!("Error: {}", err)}]), true),
+                    Ok(val) => (json!([{"type": "text", "text": val.to_string()}]), false),
+                    Err(err) => (
+                        json!([{"type": "text", "text": format!("Error: {}", err)}]),
+                        true,
+                    ),
                 };
 
                 let resp = json!({

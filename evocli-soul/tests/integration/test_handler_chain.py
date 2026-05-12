@@ -7,8 +7,6 @@ tests/integration/test_handler_chain.py — E2E 集成测试
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import pathlib
 import sys
 import pytest
@@ -277,7 +275,7 @@ class TestRpcRouter:
     async def test_router_dispatches_tracer_ping(self):
         """tracer.ping → handle_ping → returns pong"""
         import evocli_soul.state as state_mod
-        from evocli_soul.router import Router, SendProxy
+        from evocli_soul.router import Router
         from evocli_soul.handlers import register_all
 
         # 替换 SendProxy 以捕获响应

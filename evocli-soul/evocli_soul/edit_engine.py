@@ -142,7 +142,7 @@ class AmbiguousSearchError(Exception):
     def to_ai_feedback(self) -> str:
         """格式化为回传给 AI 的反馈消息（引导 AI 提供更具体的 SEARCH 块）。"""
         lines_str = ", ".join(str(n) for n in self.match_line_numbers[:10])
-        suffix = f" (showing first 10)" if self.match_count > 10 else ""
+        suffix = " (showing first 10)" if self.match_count > 10 else ""
         return (
             f"AMBIGUOUS EDIT: Your SEARCH block appears {self.match_count} times "
             f"in the file{suffix}.\n"
