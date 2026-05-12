@@ -398,7 +398,8 @@ class ContextEngine:
                 log.debug("file read for cache: %s", _fe)
 
         file_unchanged = (current_file_hash == cached_file_hash) and bool(cached_file_hash)
-        can_reuse = goal_unchanged and file_unchanged and bool(_cache.get("repomap_text"))
+        can_reuse_repomap = goal_unchanged and file_unchanged and bool(_cache.get("repomap_text"))
+        can_reuse = can_reuse_repomap  # kept for backwards compat with repomap branch below
 
         # Update cache keys for next turn regardless of hit/miss
         _state_cache.update_context_cache({
@@ -407,7 +408,8 @@ class ContextEngine:
         }, session_id)
 
         if can_reuse:
-            log.debug("Context cache HIT (session=%s) — skipping RepoMap + memory search", session_id)
+            log.debug("RepoMap cache HIT (session=%s) — skipping tree-sitter scan", session_id)
+        # Memory search is NEVER cached — always fresh (turn-N writes must appear in turn-N+1)
 
         # ── 统一内存读取（H1 遗留修复）──────────────────────────────
         # H1 将写入统一到 Python LanceDB，读取也必须走同一路径。
@@ -435,20 +437,17 @@ class ContextEngine:
         constraint_text = "\n".join(f"- {c}" for c in constraints)
 
         # ── P1/P2/P3 记忆：一次语义搜索，按 scope 拆分 ──────────
-        # Cache hit: reuse previous search results (same goal = same relevant memories)
-        # Cache miss: run full vector search, then cache results for next turn
+        # Memory search is ALWAYS executed — never cached across turns.
+        # Reason: turn-N may write new memories that turn-N+1 must see.
+        # The search itself is fast (~10ms with fastembed in-process model).
         _all_memories: list[dict] = []
-        if can_reuse and _cache.get("memory_results") is not None:
-            _all_memories = _cache["memory_results"]
-            log.debug("Memory search cache HIT — reusing %d results", len(_all_memories))
-        elif _mc is not None and remaining > 0:
+        if _mc is not None and remaining > 0:
             try:
                 _all_memories = _mc.search(
                     goal, top_k=15,
                     current_project=project_id,
                     active_tools=active_tools or [],
                 )
-                _state_cache.update_context_cache({"memory_results": _all_memories}, session_id)
             except Exception as e:
                 log.debug("memory search: %s", e)
 

@@ -86,7 +86,14 @@ MIN_IMPORTANCE       = 0.1    # 记忆最低重要性（不会完全消失）
 # ── JSONLines Fallback Store ─────────────────────────────
 
 class _JSONLinesStore:
-    """Zero-dependency fallback: one JSON object per line."""
+    """Zero-dependency fallback: one JSON object per line.
+    
+    Thread-safety: uses a threading.Lock around file writes to prevent
+    interleaved JSON lines when concurrent async tasks (e.g., _distill_session
+    + memory_write tool call) write simultaneously.
+    """
+    import threading as _threading
+    _write_lock = _threading.Lock()  # class-level lock, shared across all instances
 
     def __init__(self, path: Path):
         self.path = path
@@ -104,8 +111,11 @@ class _JSONLinesStore:
         # Research: Schema-grounded memory (IAAR 2026)
         entry.setdefault("memory_type", "episodic")   # episodic/semantic/procedural/constraint/preference
         entry.setdefault("importance_score", 1.0)     # initial importance, decays over time
-        with open(self.path, "a", encoding="utf-8", errors="replace") as f:
-            f.write(_safe_json_dumps(entry) + "\n")
+        line = _safe_json_dumps(entry) + "\n"
+        # Lock prevents interleaved writes from concurrent async distillation + tool calls
+        with _JSONLinesStore._write_lock:
+            with open(self.path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(line)
         return entry["id"]
 
     def search(self, query: str, project_id: Optional[str], top_k: int) -> list[dict]:

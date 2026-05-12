@@ -38,6 +38,23 @@ pub enum SkillAction {
         #[arg(long)]
         force: bool,
     },
+    /// Promote a draft Skill to trusted status (closes the Evolution flywheel)
+    ///
+    /// After the Evolution Engine generates a Skill draft, use this command
+    /// to review and activate it. The draft's status is changed from "draft"
+    /// to "trusted" in-place, making it available for automatic execution.
+    ///
+    /// Example:
+    ///   evocli evolve drafts        # list pending drafts
+    ///   evocli skill show auto_abc  # review the draft
+    ///   evocli skill promote auto_abc  # activate it
+    Promote {
+        /// Skill ID to promote from draft to trusted
+        skill_id: String,
+        /// Demote instead (change trusted → draft for review)
+        #[arg(long)]
+        demote: bool,
+    },
     /// Show detailed info for a skill
     Show {
         skill_id: String,
@@ -62,6 +79,7 @@ pub async fn run(action: SkillAction) -> Result<()> {
         }
         SkillAction::Export { skill_id, output } => cmd_export(&skill_id, output.as_deref()),
         SkillAction::Import { path, global, force } => cmd_import(&path, global, force),
+        SkillAction::Promote { skill_id, demote }   => cmd_promote(&skill_id, demote),
         SkillAction::Show { skill_id } => cmd_show(&skill_id),
     }
 }
@@ -161,6 +179,56 @@ fn cmd_import(path: &str, global: bool, force: bool) -> Result<()> {
     let scope = if global { "global" } else { "project-local" };
     println!("✅ Imported skill '{}' → {} ({})", skill_id, dst.display(), scope);
     println!("   Run: evocli skill run {}", skill_id);
+    Ok(())
+}
+
+// ── promote ───────────────────────────────────────────────────────────────────
+
+/// Promote a Skill draft → trusted (or demote trusted → draft).
+///
+/// Closes the Evolution flywheel: Evolution Engine generates drafts, user
+/// reviews with `evocli skill show <id>`, then promotes with this command.
+/// The skill immediately becomes available for automatic execution by the AI.
+fn cmd_promote(skill_id: &str, demote: bool) -> Result<()> {
+    let path = find_skill_file(skill_id)?;
+    let raw  = std::fs::read_to_string(&path)
+        .with_context(|| format!("Cannot read skill file: {}", path.display()))?;
+
+    let (from_status, to_status) = if demote {
+        ("trusted", "draft")
+    } else {
+        ("draft", "trusted")
+    };
+
+    // Validate current status
+    if !raw.contains(&format!("status = \"{}\"", from_status)) {
+        let current = if raw.contains("status = \"draft\"") { "draft" }
+                      else if raw.contains("status = \"trusted\"") { "trusted" }
+                      else { "unknown" };
+        anyhow::bail!(
+            "Skill '{}' has status '{}', cannot {}. Use evocli skill show {} to inspect.",
+            skill_id, current,
+            if demote { "demote" } else { "promote" },
+            skill_id
+        );
+    }
+
+    // Replace status field in TOML (simple string replacement, avoids losing comments)
+    let updated = raw.replace(
+        &format!("status = \"{}\"", from_status),
+        &format!("status = \"{}\"", to_status),
+    );
+    std::fs::write(&path, updated)
+        .with_context(|| format!("Cannot write skill file: {}", path.display()))?;
+
+    if demote {
+        println!("↩  Skill '{}' demoted: trusted → draft", skill_id);
+        println!("   It will no longer run automatically until promoted again.");
+    } else {
+        println!("✅ Skill '{}' promoted: draft → trusted", skill_id);
+        println!("   The AI can now discover and execute it automatically.");
+        println!("   Test with: evocli skill run {} --dry-run", skill_id);
+    }
     Ok(())
 }
 

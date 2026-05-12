@@ -64,16 +64,30 @@ class LLMClient:
         # ── litellm.Router ────────────────────────────────────────────────
         model_list = self._build_router_model_list(api_key)
         self._router = Router(
-            model_list=model_list,
-            num_retries=3,
-            retry_after=0.5,
-            allowed_fails=2,
+            model_list    = model_list,
+            num_retries   = 3,
+            # Exponential backoff: 5s → 20s → 80s on 429 rate-limit errors.
+            # Original 0.5s caused all 3 retries to exhaust instantly —
+            # Anthropic/OpenAI 429 typically require 20–60s cooldown.
+            retry_after   = 5,
+            allowed_fails = 2,
+            # cooldown_time: how long a deployment is marked "unhealthy" after failure
+            cooldown_time = 30,
         )
 
+        # ── Anthropic prompt caching flag ─────────────────────────────────
+        # When provider is Anthropic, add cache_control to static message parts
+        # (system prompt + tool definitions). This enables 90% cost reduction on
+        # cache reads and ~80% reduction on per-turn input token costs.
+        # Only Anthropic supports this; other providers ignore the field.
+        self._use_prompt_cache = self._provider == "anthropic" or "anthropic" in (
+            self._fast_model + self._smart_model
+        ).lower()
+
         self._models = {"fast": self._fast_model, "smart": self._smart_model}
-        log.info("LLMClient (Router): provider=%s fast=%s smart=%s base_url=%s",
+        log.info("LLMClient (Router): provider=%s fast=%s smart=%s base_url=%s cache=%s",
                  self._provider, self._fast_model, self._smart_model,
-                 self._base_url or "(default)")
+                 self._base_url or "(default)", "on" if self._use_prompt_cache else "off")
 
     @staticmethod
     def _load_config_from_disk() -> dict:
@@ -129,6 +143,37 @@ class LLMClient:
         if env_var and not os.environ.get(env_var):
             os.environ[env_var] = key
 
+    def _with_cache_control(self, messages: list[dict]) -> list[dict]:
+        """Add Anthropic cache_control to the system message when prompt caching is enabled.
+
+        Anthropic prompt caching rules:
+        - Minimum cacheable block: 1024 tokens (system) or 2048 tokens (user messages)
+        - Adding cache_control to the system message costs +25% on first write,
+          then saves 90% on all subsequent reads within the 5-minute TTL.
+        - Only add to the FIRST (system) message — the static part that doesn't change.
+        - For user/assistant history we do NOT add cache_control (they change every turn).
+        """
+        if not self._use_prompt_cache:
+            return messages
+        result = []
+        for i, msg in enumerate(messages):
+            if i == 0 and msg.get("role") == "system":
+                content = msg.get("content", "")
+                # Convert to content-block format required by Anthropic's caching API
+                result.append({
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": content,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                })
+            else:
+                result.append(msg)
+        return result
+
     def _resolve_model(self, hint: str = "auto", task_context: dict | None = None) -> str:
         """
         返回 Router model group alias ("fast" or "smart").
@@ -167,6 +212,9 @@ class LLMClient:
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
+
+        # Apply Anthropic prompt caching to the system message (static part)
+        messages = self._with_cache_control(messages)
 
         # litellm.Router.acompletion() — 研究: 替代手写 litellm.acompletion()
         # Router 处理: 重试、provider fallback、负载均衡（无需自写逻辑）

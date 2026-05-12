@@ -979,6 +979,26 @@ class EvoCLIAgent:
                     importance = rule_importance
 
                 mid = memory.add(content, memory_type=mem_type, priority="project", importance=importance)
+
+                # MemRouter training data accumulation (hot-path fix):
+                # When ML model is unavailable or low-confidence, fall back to LLM labeling
+                # AND persist the label to JSONL for future Phase-1 classifier training.
+                # This is the fix for the broken MemRouter training pipeline — the issue was
+                # that label_with_llm() was only called from seed_labels_from_existing(),
+                # which is never triggered automatically.
+                if ml_result is None or ml_result.get("confidence", 0) < 0.6:
+                    # Background LLM labeling — non-blocking, best-effort
+                    import asyncio as _asyncio
+                    async def _label_in_background(c: str, t: str) -> None:
+                        try:
+                            from evocli_soul.mem_router_labeler import label_with_llm
+                            from evocli_soul import state as _st_llm
+                            llm_client = _st_llm.get_llm_client()
+                            await label_with_llm(c, llm_client)  # store_label_direct called inside
+                        except Exception:
+                            pass
+                    _asyncio.create_task(_label_in_background(content, mem_type))
+
                 await emit_event("tool_call_done", {"tool": "memory.write", "ok": True})
                 return _json.dumps({"ok": True, "id": mid, "memory_type": mem_type}, ensure_ascii=False)
             except Exception as e:
@@ -1309,21 +1329,24 @@ class EvoCLIAgent:
 
         if self._agent is not None:
             try:
-                # pydantic-ai: inject message_history for multi-turn continuity
-                # message_history accepts list of ModelMessage objects;
-                # simple dict list is accepted as-is in pydantic-ai >= 0.0.30
-                import importlib.util as _iu
-                pydantic_ai_history = None
-                if prior_history and _iu.find_spec("pydantic_ai"):
+                # pydantic-ai multi-turn: inject prior conversation history.
+                # pydantic-ai >= 0.0.30 accepts message_history as list[ModelMessage].
+                # Our prior_history is list[dict] with {role, content} — we attempt
+                # to pass it directly (pydantic-ai is lenient with dict messages in
+                # recent versions). On TypeError/ValidationError we fall back gracefully
+                # to the single-turn path (LLM sees context in system prompt instead).
+                run_kwargs: dict = {}
+                if prior_history:
                     try:
-                        from pydantic_ai.messages import ModelMessage  # type: ignore
-                        pydantic_ai_history = prior_history  # passed through if compatible
+                        # Verify pydantic_ai actually accepts message_history
+                        import inspect as _inspect
+                        import importlib.util as _iu
+                        if _iu.find_spec("pydantic_ai"):
+                            sig = _inspect.signature(self._agent.run_stream)
+                            if "message_history" in sig.parameters:
+                                run_kwargs["message_history"] = prior_history
                     except Exception:
-                        pass  # older pydantic-ai — skip history injection
-
-                run_kwargs = {}
-                if pydantic_ai_history:
-                    run_kwargs["message_history"] = pydantic_ai_history
+                        pass  # API introspection failed — skip history injection
 
                 async with self._agent.run_stream(full_input, **run_kwargs) as result:
                     async for chunk in result.stream_text(delta=True):
