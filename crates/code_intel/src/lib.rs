@@ -34,6 +34,9 @@ pub struct SymbolInfo {
     pub kind: String,
     pub file: String,
     pub line: u32,
+    /// End line of the symbol body (0 = unknown). Used for semantic chunk extraction.
+    #[serde(default)]
+    pub line_end: u32,
     pub signature: Option<String>,
     pub language: String,
 }
@@ -47,6 +50,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     kind       TEXT NOT NULL,
     file       TEXT NOT NULL,
     line       INTEGER NOT NULL,
+    line_end   INTEGER NOT NULL DEFAULT 0,
     signature  TEXT,
     language   TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -54,6 +58,12 @@ CREATE TABLE IF NOT EXISTS symbols (
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file);
 
+-- Migration: add line_end if upgrading from old schema (idempotent)
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, kind);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id, kind);
+"#;
+
+const SCHEMA_EDGES: &str = r#"
 CREATE TABLE IF NOT EXISTS edges (
     source_id TEXT NOT NULL,
     target_id TEXT NOT NULL,
@@ -62,8 +72,6 @@ CREATE TABLE IF NOT EXISTS edges (
     line      INTEGER,
     PRIMARY KEY (source_id, target_id, kind)
 );
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, kind);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id, kind);
 "#;
 
 // ── Regex patterns (compiled once via OnceLock) ─────────────────
@@ -124,6 +132,9 @@ impl CodeIndex {
         let conn = Connection::open(db_path)
             .with_context(|| format!("Failed to open code_intel DB: {}", db_path.display()))?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(SCHEMA_EDGES)?;
+        // Migration: add line_end column if upgrading from old schema
+        let _ = conn.execute_batch("ALTER TABLE symbols ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0");
         Ok(Self { conn })
     }
 
@@ -131,6 +142,7 @@ impl CodeIndex {
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(SCHEMA_EDGES)?;
         Ok(Self { conn })
     }
 
@@ -183,9 +195,9 @@ impl CodeIndex {
                     .trim()
                     .to_string();
                 tx.execute(
-                    "INSERT OR REPLACE INTO symbols (id, name, kind, file, line, signature, language, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![id, sym.name, sym.kind, file_str, sym.line, signature, sym.language, now],
+                    "INSERT OR REPLACE INTO symbols (id, name, kind, file, line, line_end, signature, language, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![id, sym.name, sym.kind, file_str, sym.line, sym.line_end, signature, sym.language, now],
                 )?;
                 count += 1;
             }
@@ -435,7 +447,7 @@ impl CodeIndex {
     }
     pub fn find_symbol(&self, name: &str) -> Result<Vec<SymbolInfo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, kind, file, line, signature, language FROM symbols WHERE name = ?1",
+            "SELECT id, name, kind, file, line, line_end, signature, language FROM symbols WHERE name = ?1",
         )?;
         let rows = stmt.query_map(params![name], |row| {
             Ok(SymbolInfo {
@@ -444,8 +456,9 @@ impl CodeIndex {
                 kind: row.get(2)?,
                 file: row.get(3)?,
                 line: row.get(4)?,
-                signature: row.get(5)?,
-                language: row.get(6)?,
+                line_end: row.get::<_, u32>(5).unwrap_or(0),
+                signature: row.get(6)?,
+                language: row.get(7)?,
             })
         })?;
         let mut results = Vec::new();
@@ -459,7 +472,7 @@ impl CodeIndex {
     pub fn list_symbols(&self, file: &Path) -> Result<Vec<SymbolInfo>> {
         let file_str = file.to_string_lossy().replace('\\', "/");
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, kind, file, line, signature, language FROM symbols WHERE file = ?1 ORDER BY line",
+            "SELECT id, name, kind, file, line, line_end, signature, language FROM symbols WHERE file = ?1 ORDER BY line",
         )?;
         let rows = stmt.query_map(params![file_str], |row| {
             Ok(SymbolInfo {
@@ -468,8 +481,9 @@ impl CodeIndex {
                 kind: row.get(2)?,
                 file: row.get(3)?,
                 line: row.get(4)?,
-                signature: row.get(5)?,
-                language: row.get(6)?,
+                line_end: row.get::<_, u32>(5).unwrap_or(0),
+                signature: row.get(6)?,
+                language: row.get(7)?,
             })
         })?;
         let mut results = Vec::new();
@@ -508,7 +522,7 @@ impl CodeIndex {
     /// Find all symbols that call this symbol (upstream callers).
     pub fn incoming_calls(&self, symbol_id: &str) -> Result<Vec<SymbolInfo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.name, s.kind, s.file, s.line, s.signature, s.language FROM symbols s \
+            "SELECT s.id, s.name, s.kind, s.file, s.line, COALESCE(s.line_end,0), s.signature, s.language FROM symbols s \
              INNER JOIN edges e ON e.source_id = s.id \
              WHERE e.target_id = ?1 AND e.kind = 'calls' \
              ORDER BY s.file, s.line",
@@ -521,8 +535,9 @@ impl CodeIndex {
                     kind: row.get(2)?,
                     file: row.get(3)?,
                     line: row.get(4)?,
-                    signature: row.get(5)?,
-                    language: row.get(6)?,
+                    line_end: row.get::<_, u32>(5).unwrap_or(0),
+                    signature: row.get(6)?,
+                    language: row.get(7)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -533,7 +548,7 @@ impl CodeIndex {
     /// Find all symbols this symbol calls (downstream callees).
     pub fn outgoing_calls(&self, symbol_id: &str) -> Result<Vec<SymbolInfo>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.id, s.name, s.kind, s.file, s.line, s.signature, s.language FROM symbols s \
+            "SELECT s.id, s.name, s.kind, s.file, s.line, COALESCE(s.line_end,0), s.signature, s.language FROM symbols s \
              INNER JOIN edges e ON e.target_id = s.id \
              WHERE e.source_id = ?1 AND e.kind = 'calls' \
              ORDER BY s.file, s.line",
@@ -546,8 +561,9 @@ impl CodeIndex {
                     kind: row.get(2)?,
                     file: row.get(3)?,
                     line: row.get(4)?,
-                    signature: row.get(5)?,
-                    language: row.get(6)?,
+                    line_end: row.get::<_, u32>(5).unwrap_or(0),
+                    signature: row.get(6)?,
+                    language: row.get(7)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -644,3 +660,6 @@ mod tests {
         Ok(())
     }
 }
+
+
+

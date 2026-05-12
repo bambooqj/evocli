@@ -648,6 +648,71 @@ class EvoCLIAgent:
             max_chars: max characters to return (default 8000 ≈ 2k tokens)
             selector:  optional CSS selector to extract specific element (e.g. 'article', 'main')
             """
+
+        @agent.tool_plain
+        async def code_semantic_search(
+            query: str,
+            top_k: int = 5,
+            language: str = "",
+            kind: str = "",
+            file_filter: str = "",
+        ) -> str:
+            """
+            Semantic search over indexed code function/class bodies using vector similarity.
+
+            Unlike shell_grep (string matching), this understands INTENT:
+            "find where user input is validated" finds validation logic even if
+            the word 'validate' doesn't appear in the code.
+
+            Requires `evocli index` to have been run first.
+
+            query:       natural language description of what you're looking for
+            top_k:       number of results to return (default: 5)
+            language:    filter by language, e.g. "rust" "python" "typescript"
+            kind:        filter by kind, e.g. "function" "class"
+            file_filter: only return results from files containing this substring
+
+            Examples:
+              code_semantic_search("user authentication and token validation")
+              code_semantic_search("database connection pool setup", language="python")
+              code_semantic_search("error handling for network requests", top_k=3)
+              code_semantic_search("parse config file", file_filter="config")
+            """
+            try:
+                from evocli_soul.code_chunks import get_index
+                idx = get_index(self._session_id)
+                results = idx.search(
+                    query,
+                    top_k=top_k,
+                    language=language,
+                    kind=kind,
+                    file_filter=file_filter,
+                )
+                if not results:
+                    return _json.dumps({
+                        "query":   query,
+                        "results": [],
+                        "hint":    "No results. Run 'evocli index' first to build the semantic code index.",
+                    }, ensure_ascii=False)
+                # Format results for readability
+                formatted = []
+                for r in results:
+                    formatted.append({
+                        "symbol":   r.get("symbol", ""),
+                        "file":     r.get("file", ""),
+                        "line":     r.get("line_start", 0),
+                        "kind":     r.get("kind", ""),
+                        "language": r.get("language", ""),
+                        "body":     r.get("body", "")[:800],  # cap for context
+                        "signature": r.get("signature", ""),
+                    })
+                return _json.dumps({
+                    "query":   query,
+                    "count":   len(formatted),
+                    "results": formatted,
+                }, ensure_ascii=False)
+            except Exception as e:
+                return _json.dumps({"error": str(e), "query": query}, ensure_ascii=False)
             # Use native Rust web.fetch RPC — faster, no Python dependency on httpx/readability
             params: dict = {"url": url, "max_chars": max_chars}
             if selector:
