@@ -357,6 +357,13 @@ class ContextEngine:
         BUDGET_GIT_DIFF    = _b["git_diff"]
         BUDGET_HISTORY     = _b["history"]
 
+        async def _progress(msg: str) -> None:
+            """Emit a progress soul_status event during long context build phases."""
+            try:
+                from evocli_soul.rpc import emit_event as _ev
+                await _ev("soul_status", {"status": "loading", "message": msg})
+            except Exception:
+                pass  # Never let progress events break context building
         goal         = params.get("goal", "")
         current_file = params.get("current_file")
         git_diff     = params.get("git_diff", "")
@@ -382,6 +389,8 @@ class ContextEngine:
         cached_goal_fp   = _cache.get("goal_fingerprint", "")
         cached_file_hash = _cache.get("current_file_hash", "")
         goal_unchanged   = (goal_fp == cached_goal_fp) and bool(cached_goal_fp)
+
+        await _progress("⚙ 构建上下文…")
 
         # Always read current file (needed for code injection anyway).
         # We compute its hash here for cache validation.
@@ -437,10 +446,9 @@ class ContextEngine:
 
         # ── P1/P2/P3 记忆：一次语义搜索，按 scope 拆分 ──────────
         # Memory search is ALWAYS executed — never cached across turns.
-        # Reason: turn-N may write new memories that turn-N+1 must see.
-        # The search itself is fast (~10ms with fastembed in-process model).
         _all_memories: list[dict] = []
         if _mc is not None and remaining > 0:
+            await _progress("🧠 检索项目记忆…")
             try:
                 _all_memories = _mc.search(
                     goal, top_k=15,
@@ -538,6 +546,7 @@ class ContextEngine:
                 log.debug("RepoMap cache HIT — %d tokens reused", used)
         else:
             # Cache miss: compute RepoMap from scratch
+            await _progress("📊 扫描代码库结构（首次可能需要 10-30s）…")
             # Step 1: 获取 Rust code_intel 已有的 PageRank 符号排名（轻量 RPC）
             if current_file and remaining > 500:
                 try:

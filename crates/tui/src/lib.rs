@@ -43,7 +43,8 @@ impl Drop for CleanupGuard {
 /// `bridge` is the IPC connection to the Python Soul.
 /// `model_name` is displayed in the title bar.
 /// `resume_session` — if Some(session_id), inject a resume message on startup.
-pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Option<&str>, max_context_tokens: usize) -> Result<()> {
+/// `first_chunk_timeout_s` — how long to wait for the first stream chunk before showing error.
+pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Option<&str>, max_context_tokens: usize, first_chunk_timeout_s: u64) -> Result<()> {
     // ── Setup terminal ──────────────────────────────────
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -201,11 +202,11 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
                                 tokio::spawn(async move {
                                     let mut stream = stream;
                                     // First-chunk timeout: if the Python Soul doesn't send ANY
-                                    // chunk within 60 seconds, declare the stream dead and show
-                                    // an actionable error.  Once the first real chunk arrives,
-                                    // this guard is disabled — long tool chains are unaffected.
+                                    // chunk within first_chunk_timeout_s, declare the stream dead.
+                                    // Context building (RepoMap, memory search) can take 30-120s
+                                    // on large projects — configurable via [agent] first_chunk_timeout_s.
                                     let first_chunk_deadline =
-                                        tokio::time::sleep(std::time::Duration::from_secs(60));
+                                        tokio::time::sleep(std::time::Duration::from_secs(first_chunk_timeout_s));
                                     tokio::pin!(first_chunk_deadline);
                                     let mut got_first_chunk = false;
 
@@ -375,7 +376,7 @@ pub async fn run(bridge: Arc<SoulBridge>, model_name: &str, resume_session: Opti
                         tokio::spawn(async move {
                             let mut stream = stream;
                             let first_chunk_deadline =
-                                tokio::time::sleep(std::time::Duration::from_secs(60));
+                                tokio::time::sleep(std::time::Duration::from_secs(first_chunk_timeout_s));
                             tokio::pin!(first_chunk_deadline);
                             let mut got_first_chunk = false;
                             loop {

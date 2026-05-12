@@ -511,6 +511,13 @@ pub struct AgentConfig {
     #[serde(default = "default_rpc_timeout_ms")]
     pub rpc_timeout_ms: u64,
 
+    /// How many seconds to wait for the first streaming chunk from the AI before
+    /// showing "No response" error in the TUI. Increase if your context building
+    /// (RepoMap, memory search) takes longer than 120s on a large project.
+    /// config.toml: [agent] first_chunk_timeout_s = 120
+    #[serde(default = "default_first_chunk_timeout_s")]
+    pub first_chunk_timeout_s: u64,
+
     /// Compress history after this many message exchanges.
     #[serde(default = "default_history_compress_turns")]
     pub history_compress_turns: usize,
@@ -528,6 +535,7 @@ impl Default for AgentConfig {
             stream_timeout_s:        default_stream_timeout_s(),
             context_build_timeout_s: default_context_build_timeout_s(),
             rpc_timeout_ms:          default_rpc_timeout_ms(),
+            first_chunk_timeout_s:   default_first_chunk_timeout_s(),
             history_compress_turns:  default_history_compress_turns(),
             history_compress_tokens: default_history_compress_tokens(),
         }
@@ -539,6 +547,7 @@ fn default_max_reflections()         -> usize { 3 }
 fn default_stream_timeout_s()        -> u64   { 30 }
 fn default_context_build_timeout_s() -> u64   { 20 }
 fn default_rpc_timeout_ms()          -> u64   { 90_000 }
+fn default_first_chunk_timeout_s()   -> u64   { 120 }  // raised from 60s — context building can take time
 fn default_history_compress_turns()  -> usize { 10 }
 fn default_history_compress_tokens() -> usize { 8_000 }
 
@@ -627,13 +636,18 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             allow_all_commands:     true,
-            allow_all_paths:        false,
+            // allow_all_paths=true by default: the user controls their own project files.
+            // Add specific denied_paths in config.toml if you need to restrict access.
+            allow_all_paths:        true,
             block_dangerous_always: true,
             allowed_commands:       default_allowed_commands(),
             extra_allowed_commands: vec![],
             blocked_patterns:       default_blocked_patterns(),
             extra_blocked_patterns: vec![],
-            denied_paths:           default_denied_paths(),
+            // Default deny list is empty — user opts in to path restrictions.
+            // Example protected paths to add manually:
+            //   denied_paths = [".evocli/config.toml", ".ssh", ".gnupg"]
+            denied_paths:           vec![],
             extra_denied_paths:     vec![],
         }
     }

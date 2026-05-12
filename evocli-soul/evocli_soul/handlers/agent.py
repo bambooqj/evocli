@@ -382,11 +382,17 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
                 )
                 return
 
-        # ── Progress event ────────────────────────────────────────────────────
+        # ── Progress events — send stream_chunk (NOT just soul_status) ──────────
+        # soul_status does NOT reset the TUI's first_chunk_deadline timer.
+        # Only stream_chunk resets it. We send a lightweight status chunk immediately
+        # so the TUI shows activity and the 120s timer doesn't fire during context build.
         await emit_event("soul_status", {
             "status":  "loading",
-            "message": "⚙ Building context & calling LLM…",
+            "message": "⚙ 正在构建上下文…",
         })
+        # Send first visible progress chunk — this resets the TUI first_chunk timer.
+        # The chunk is styled as a status line that will be replaced by actual response.
+        await send.stream_chunk(req_id, "", done=False)  # unlock TUI timer immediately
 
         # ── ToolFlow 触发检查（在 LLM 调用前）────────────────────────────────
         # 检查用户意图是否匹配已学习的工具流

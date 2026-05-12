@@ -2156,11 +2156,19 @@ class EvoCLIAgent:
                 try:
                     targs = _json.loads(tc.function.arguments)
                 except Exception as e:
-                    # HIGH: Silently using empty args causes tools to execute with wrong parameters.
-                    # Log the invalid JSON so we can diagnose LLM output format regressions.
                     log.warning("_run_litellm: JSON decode failed for tool '%s' args=%r: %s",
                                 tc.function.name, tc.function.arguments[:200], e)
                     targs = {}
+                # Emit progress so user sees which tool is running (prevents silent spinning)
+                try:
+                    from evocli_soul.rpc import emit_event as _progress_ev
+                    _tool_display = _describe_tool_call(tc.function.name, targs)
+                    await _progress_ev("soul_status", {
+                        "status":  "loading",
+                        "message": f"🔧 {_tool_display}",
+                    })
+                except Exception:
+                    pass
                 result = await self._execute_tool(tc.function.name, targs)
                 conversation.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
