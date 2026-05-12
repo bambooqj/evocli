@@ -107,24 +107,60 @@ class LLMClient:
 
     @staticmethod
     def _load_config_from_disk() -> dict:
-        """Load LLM config directly from ~/.evocli/config.toml (Soul-side config read)."""
+        """Load LLM config from config.toml files with project-local override.
+
+        Merge order (highest priority wins):
+          1. project-local  {cwd}/.evocli/config.toml
+          2. global         ~/.evocli/config.toml
+          3. env var overrides (OPENAI_API_KEY etc.)
+
+        This mirrors the Rust host merge logic in config.rs so Python-side
+        LLM routing honours per-project model/key configuration.
+        """
+        import os as _os
         try:
             from pathlib import Path
             import tomllib
-            cfg_path = Path.home() / ".evocli" / "config.toml"
-            if not cfg_path.exists():
-                return {}
-            with open(cfg_path, "rb") as f:
-                cfg = tomllib.load(f)
-            # Apply env var overrides
-            llm = cfg.get("llm", {})
-            if not llm.get("api_key"):
+
+            def _read_toml(path: Path) -> dict:
+                if not path.exists():
+                    return {}
+                try:
+                    with open(path, "rb") as f:
+                        return tomllib.load(f)
+                except Exception as _e:
+                    log.debug("LLMClient: failed to read %s: %s", path, _e)
+                    return {}
+
+            global_cfg  = _read_toml(Path.home() / ".evocli" / "config.toml")
+            project_cfg = _read_toml(Path.cwd() / ".evocli" / "config.toml")
+
+            # Deep-merge: project overrides global at the llm section level.
+            # For nested dicts (llm.roles, llm.tasks, llm.params) we merge keys
+            # so project can override individual roles without clobbering others.
+            def _deep_merge(base: dict, override: dict) -> dict:
+                result = dict(base)
+                for k, v in override.items():
+                    if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                        result[k] = _deep_merge(result[k], v)
+                    else:
+                        result[k] = v
+                return result
+
+            merged_llm = _deep_merge(
+                global_cfg.get("llm", {}),
+                project_cfg.get("llm", {}),
+            )
+
+            # Apply env var overrides for api_key
+            if not merged_llm.get("api_key"):
                 for env_var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"):
-                    val = os.environ.get(env_var)
+                    val = _os.environ.get(env_var)
                     if val:
-                        llm["api_key"] = val
+                        merged_llm["api_key"] = val
                         break
-            return llm
+
+            return merged_llm
         except Exception as e:
             log.debug("LLMClient: config load failed: %s", e)
             return {}

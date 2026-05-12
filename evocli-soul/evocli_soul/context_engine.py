@@ -281,11 +281,10 @@ async def compact_session_to_anchor(
 
     system = _ANCHORED_SUMMARY_TEMPLATE
     try:
-        summary = await llm_client.complete(
+        summary = await llm_client.complete_for_task(
+            "summarize",
             prompt,
-            tier="fast",   # Use fast/cheap model for summarization (Aider pattern)
             system=system,
-            max_tokens=1500,
         )
         log.info("Context compacted: %d history msgs → anchored summary (%d chars)",
                  len(history), len(summary))
@@ -596,8 +595,18 @@ class ContextEngine:
         # ── 对话历史（Anchored Summary + observation masking）────────
         # Research (OpenCode 模式): 当历史过长时使用结构化 Anchored Summary 压缩，
         # 而非简单截断。保留 Goal/Constraints/Progress 结构，确保长会话不丢失目标。
+        # IMPORTANT: anchored_summary must be injected even when history is empty
+        # (e.g. after /compress cleared history) — it IS the compressed session memory.
         history_text = ""
         anchored_summary = params.get("anchored_summary", "")  # 外部传入已有摘要
+        if anchored_summary and remaining > 0:
+            # Always inject the anchored summary first — it survives /compress.
+            anchor_text = f"## 会话摘要（Anchored Summary）\n{anchored_summary}"
+            used = _count_tokens(anchor_text)
+            history_text = anchor_text
+            remaining -= used
+            slots.append({"name": "anchored_summary", "tokens": used, "priority": "history"})
+
         if history and remaining > 0:
             budget         = min(BUDGET_HISTORY, remaining)
             history_tokens = sum(_count_tokens(str(m.get("content", ""))) for m in history)
@@ -607,40 +616,58 @@ class ContextEngine:
                 # 保留最近 4 轮对话（tail preservation）
                 tail    = history[-4:]
                 to_compact = history[:-4]
-                # 在后台触发 anchored summary（不阻塞）
-                # 当前轮使用 tail + existing anchor
-                if anchored_summary:
-                    anchor_text = f"## 会话摘要（Anchored Summary）\n{anchored_summary}"
-                else:
-                    # 简单摘要：最近几条关键消息
+                # anchored_summary already injected above as its own slot if present.
+                # Here we only append recent tail — no need to repeat the anchor header.
+                if not anchored_summary:
+                    # No pre-existing anchor — build a quick inline summary from older turns
                     key_msgs = [m for m in to_compact if m.get("role") != "tool"][-5:]
-                    anchor_text = "## 历史摘要\n" + "\n".join(
+                    anchor_inline = "## 历史摘要\n" + "\n".join(
                         f"[{m.get('role','')}]: {str(m.get('content',''))[:200]}"
                         for m in key_msgs
                     )
+                else:
+                    anchor_inline = ""  # already in history_text from the block above
                 tail_text = "\n".join(
                     f"{m.get('role','')}: {str(m.get('content',''))[:400]}"
                     for m in _compact_history(tail, budget // 2)
                 )
-                history_text = anchor_text + "\n\n## 最近对话\n" + tail_text
+                extra = (anchor_inline + "\n\n" if anchor_inline else "") + "## 最近对话\n" + tail_text
+                history_text = (history_text + "\n\n" + extra).strip() if history_text else extra
             else:
                 # 历史较短 — 正常压缩
                 compacted = _compact_history(history[-20:], budget)
                 if compacted:
                     lines = [f"{m.get('role','')}: {str(m.get('content',''))[:400]}"
                              for m in compacted]
-                    history_text = "\n".join(lines)
+                    extra = "\n".join(lines)
+                    history_text = (history_text + "\n\n" + extra).strip() if history_text else extra
 
             used = _count_tokens(history_text)
             remaining -= used
             slots.append({"name": "history", "tokens": used, "priority": "history"})
 
         # ── system_prompt 组装 ────────────────────────────────────
-        parts = ["你是 EvoCLI，一个 AI 编程 Runtime 助手。"]
-        if constraint_text:
-            parts.append(f"\n## 项目约束（必须遵守）\n{constraint_text}")
-        if goal:
-            parts.append(f"\n## 当前目标\n{goal}")
+        # Use build_system_prompt() as the base to ensure DO-NOW rules, SYSTEM_WORKFLOW,
+        # tool ordering, and failure recovery are present in ALL LLM paths (LiteLLM
+        # fallback uses ctx["system_prompt"] as its system message).
+        try:
+            from evocli_soul.default_prompts import build_system_prompt as _build_sp
+            _base_prompt = _build_sp(
+                constraints=constraint_text or "",
+                goal=goal or "",
+                read_only=params.get("read_only", False),
+                compact=False,
+            )
+        except Exception:
+            # Fallback: inline base so context_engine never hard-fails
+            _base_prompt = "你是 EvoCLI，一个 AI 编程 Runtime 助手。"
+            if constraint_text:
+                _base_prompt += f"\n\n## 项目约束（必须遵守）\n{constraint_text}"
+            if goal:
+                _base_prompt += f"\n\n## 当前目标\n{goal}"
+        parts = [_base_prompt]
+        # Append dynamic per-turn context sections (repo map, memory, skills, etc.)
+        # These come after the static workflow rules so they don't override them.
         # RepoMap (Aider-style PageRank)
         if repo_map_text:
             parts.append(f"\n## 代码库地图（Repo Map — 最相关的符号和文件结构）\n{repo_map_text}")

@@ -191,7 +191,7 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
         added, missing = [], []
         for f in _add_args:
             if _os_add.path.exists(f):
-                _st_add.add_file(_add_sid, f)
+                _st_add.add_file(f, _add_sid)  # fix: add_file(path, session_id)
                 added.append(f)
             else:
                 missing.append(f)
@@ -226,21 +226,34 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             events = list(_st_compress._session_events)  # read without draining
             llm = state.get_llm_client()
 
-            # Build summary from what we know: events + any memory
+            # Build summary from real conversation history (primary source) +
+            # session events as supplementary context. Using `prompt` ("/compress")
+            # as the summary source was wrong — it tells the model nothing useful.
+            history_for_summary = _st_compress.get_history(session_id)
+            history_summary = ""
+            if history_for_summary:
+                # Render last 20 turns as [role]: content[:300]
+                history_lines = []
+                for m in history_for_summary[-20:]:
+                    role    = m.get("role", "?")
+                    content = str(m.get("content", ""))[:300]
+                    history_lines.append(f"[{role}]: {content}")
+                history_summary = "\n".join(history_lines)
+
             event_summary = ""
             if events:
                 tool_names = [e.get("method", e.get("type", "?")) for e in events[-20:]]
-                event_summary = f"Recent actions: {', '.join(tool_names)}"
+                event_summary = f"Recent tool calls: {', '.join(tool_names)}"
 
             compress_prompt = (
-                f"Summarize the current AI coding session as an Anchored Summary.\n"
+                f"Summarize the following AI coding session as an Anchored Summary.\n"
                 f"Format:\n"
                 f"## Goal\n[what the user is trying to accomplish]\n"
                 f"## Progress\n[what has been done, what's in progress]\n"
                 f"## Key Decisions\n[important choices made]\n"
                 f"## Next Steps\n[what should happen next]\n\n"
-                f"Known context:\n{event_summary}\n"
-                f"User request: {prompt}\n\n"
+                f"Conversation history (most recent 20 turns):\n{history_summary}\n\n"
+                f"{event_summary}\n\n"
                 f"Be concise. Focus on engineering decisions and state."
             )
             summary = await llm.complete(compress_prompt, tier="fast", max_tokens=600)
@@ -374,7 +387,13 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
                     )
                 except Exception:
                     fallback_ctx = {}
-                async for chunk in agent._stream_litellm(prompt, fallback_ctx, prior_history=prior_history):
+                # Apply _inject_context so user_context (file contents, diff, history)
+                # is prepended to the prompt — same enrichment the primary path gets.
+                try:
+                    fallback_prompt = await agent._inject_context(prompt, fallback_ctx)
+                except Exception:
+                    fallback_prompt = prompt
+                async for chunk in agent._stream_litellm(fallback_prompt, fallback_ctx, prior_history=prior_history):
                     if chunk:
                         await send.stream_chunk(req_id, chunk, done=False)
                         chunks_sent += 1

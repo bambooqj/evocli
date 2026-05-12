@@ -230,27 +230,51 @@ def drain_session_events() -> list[dict]:
 
 def get_config() -> dict:
     """
-    Load and cache ~/.evocli/config.toml.
-    Returns the full config dict so handlers can pass it to EvoCLIAgent.
-    Falls back to empty dict if config is not found or unreadable.
+    Load and cache config.toml with project-local override.
+
+    Merge order (highest priority wins):
+      1. {cwd}/.evocli/config.toml  — project-local overrides
+      2. ~/.evocli/config.toml      — global defaults
+
+    Mirrors Rust host config.rs merge logic so Python handlers see the same
+    effective configuration as the host.
+    Falls back to empty dict if neither file is found or readable.
     """
     global _config
     if _config is None:
         with _init_lock:
             if _config is None:
                 try:
-                    import tomllib
+                    import tomllib, os as _os
                     from pathlib import Path
-                    cfg_path = Path.home() / ".evocli" / "config.toml"
-                    if cfg_path.exists():
-                        with open(cfg_path, "rb") as f:
-                            _config = tomllib.load(f)
-                    else:
-                        _config = {}
+
+                    def _read(p: Path) -> dict:
+                        if p.exists():
+                            try:
+                                with open(p, "rb") as f:
+                                    return tomllib.load(f)
+                            except Exception:
+                                pass
+                        return {}
+
+                    global_cfg  = _read(Path.home() / ".evocli" / "config.toml")
+                    project_cfg = _read(Path.cwd() / ".evocli" / "config.toml")
+
+                    def _deep_merge(base: dict, override: dict) -> dict:
+                        result = dict(base)
+                        for k, v in override.items():
+                            if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                                result[k] = _deep_merge(result[k], v)
+                            else:
+                                result[k] = v
+                        return result
+
+                    _config = _deep_merge(global_cfg, project_cfg)
                 except Exception as e:
                     import logging
                     logging.getLogger("evocli.state").debug("Config load failed: %s", e)
                     _config = {}
+    return _config
     return _config
 
 

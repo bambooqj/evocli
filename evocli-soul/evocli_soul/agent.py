@@ -1460,10 +1460,16 @@ class EvoCLIAgent:
     async def run(self, user_input: str, context_params: dict | None = None) -> str:
         """Run agent with context injection."""
         await self._emit_fallback_warning_once()
-        # Thread session_id so history/anchored_summary are correctly loaded
+        # Load session history from state so _build_context has multi-turn context.
+        # (The stream path gets prior_history from handlers/agent.py; run() must do it here.)
+        try:
+            import evocli_soul.state as _st_run
+            _run_history = _st_run.get_history(self._session_id)
+        except Exception:
+            _run_history = []
         ctx = await self._build_context(
             user_input, context_params,
-            history=None,               # _build_context loads from state by session_id
+            history=_run_history,
             session_id=self._session_id,
         )
         full_input = await self._inject_context(user_input, ctx)
@@ -1512,11 +1518,10 @@ class EvoCLIAgent:
             "Be specific about file paths, function names, and what exactly changes."
         )
         log.info("Architect/Editor: calling smart model for plan...")
-        architect_plan = await llm.complete(
+        architect_plan = await llm.complete_for_task(
+            "architect",
             full_input,
-            tier="smart",
             system=ARCHITECT_SYSTEM,
-            max_tokens=2000,
         )
         log.info("Architect plan generated: %d chars", len(architect_plan))
 
@@ -1552,11 +1557,10 @@ class EvoCLIAgent:
                 log.debug("run_architect_mode: failed to read current file %s: %s",
                           context_params.get("current_file"), e)
 
-        editor_output = await llm.complete(
+        editor_output = await llm.complete_for_task(
+            "editor",
             editor_prompt + chat_files_context,
-            tier="fast",
             system=EDITOR_SYSTEM,
-            max_tokens=4000,
         )
 
         # ── Step 3: Apply all blocks with git checkpoint (Aider atomicity pattern) ──
@@ -1741,12 +1745,14 @@ class EvoCLIAgent:
             # We must resolve the alias to the real model name for litellm.acompletion().
             # Use llm._router.acompletion() which understands the group aliases.
             tier_alias = llm._resolve_model("auto")
+            # Read max_tokens/temperature from config [llm.params.agent] if present.
+            _task_params = llm.get_task_params("agent")
             call_kwargs: dict = {
                 "model":       tier_alias,  # Router group alias — handled by router
                 "messages":    conversation,
                 "tools":       tools,
-                "max_tokens":  4096,
-                "temperature": 0.7,
+                "max_tokens":  _task_params.get("max_tokens",  4096),
+                "temperature": _task_params.get("temperature", 0.7),
             }
             response = await llm._router.acompletion(**call_kwargs)
             msg = response.choices[0].message
@@ -1918,12 +1924,14 @@ class EvoCLIAgent:
         # Some providers reject stream=True when tools= is present; we detect that error
         # and fall back to text-only streaming (degraded mode: model can narrate but not act).
         tools = self._build_tool_definitions()
+        _stream_task_params = llm.get_task_params("stream")
         stream_call_kwargs: dict = {
-            "model":      tier,
-            "messages":   messages,
-            "tools":      tools,
-            "stream":     True,
-            "max_tokens": 2048,
+            "model":       tier,
+            "messages":    messages,
+            "tools":       tools,
+            "stream":      True,
+            "max_tokens":  _stream_task_params.get("max_tokens",  2048),
+            "temperature": _stream_task_params.get("temperature", 0.7),
         }
         _tools_in_stream = True  # whether tools= was accepted by the provider
         try:
@@ -1945,7 +1953,9 @@ class EvoCLIAgent:
                     response = await asyncio.wait_for(
                         llm._router.acompletion(
                             model=tier, messages=messages,
-                            stream=True, max_tokens=2048,
+                            stream=True,
+                            max_tokens=_stream_task_params.get("max_tokens", 2048),
+                            temperature=_stream_task_params.get("temperature", 0.7),
                         ),
                         timeout=_stream_timeout,
                     )
@@ -1961,28 +1971,41 @@ class EvoCLIAgent:
                 raise
 
         text_yielded = False
+        tool_call_seen = False  # True if any delta contained tool_calls (even partial)
         finish_reason = None
         async for chunk in response:
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
-            text = (choice.delta.content or "") if hasattr(choice, 'delta') else ""
+            delta = choice.delta if hasattr(choice, 'delta') else None
+            text = (delta.content or "") if delta else ""
             if text:
                 yield text
                 text_yielded = True
+            # Detect tool-call deltas: provider streams tool_calls list on delta
+            if delta and getattr(delta, 'tool_calls', None):
+                tool_call_seen = True
             # Track finish reason to detect tool-call requests
             if hasattr(choice, 'finish_reason') and choice.finish_reason:
                 finish_reason = choice.finish_reason
 
-        # If the model signalled tool use (possible because we passed tools= above),
-        # fall back to _run_litellm which has a proper tool-calling loop.
-        # We also pass prior_history so the tool loop has full multi-turn context.
-        # Guard: only route when tools were accepted in the streaming call; if the
-        # provider rejected stream+tools we already degraded to text-only and the
-        # finish_reason will never be "tool_calls".
-        if _tools_in_stream and finish_reason in ("tool_calls", "function_call") and not text_yielded:
-            log.info("_stream_litellm: model requested tools (finish_reason=%s), routing to _run_litellm", finish_reason)
-            yield "\n\n"
+        # Route to _run_litellm when tool use was detected.
+        # Use finish_reason OR tool_call_seen — some providers set finish_reason="stop"
+        # even when tool deltas were streamed (non-standard behaviour).
+        # Always route when tool_call_seen regardless of text_yielded: a model that
+        # streams prose then requests a tool is still requesting a tool.
+        _tool_requested = (
+            _tools_in_stream and (
+                finish_reason in ("tool_calls", "function_call") or tool_call_seen
+            )
+        )
+        if _tool_requested:
+            log.info(
+                "_stream_litellm: tool use detected (finish_reason=%s, tool_call_seen=%s), routing to _run_litellm",
+                finish_reason, tool_call_seen,
+            )
+            if text_yielded:
+                yield "\n\n"  # separate any streamed preamble from tool result
             tool_result = await self._run_litellm(user_input, ctx, prior_history=prior_history)
             if tool_result:
                 yield tool_result
