@@ -751,10 +751,35 @@ class EvoCLIAgent:
         # ══════════════════════════════════════════════════════════════════════
 
         @agent.tool_plain
-        async def shell_ls(path: str = ".", long_format: bool = False) -> str:
-            """List directory contents. path: directory to list. long_format: show size/type."""
+        async def shell_ls(
+            path: str = ".",
+            long_format: bool = False,
+            tree: bool = False,
+            depth: int = 1,
+            show_hidden: bool = False,
+        ) -> str:
+            """List directory contents. Supports tree view and recursive depth control.
+
+            path:        directory to list (default: current directory)
+            long_format: include file sizes and type info (default: False)
+            tree:        render as ASCII tree showing directory hierarchy (default: False)
+            depth:       recursion depth — 1=flat (default), 2=one level deep, 0=unlimited
+            show_hidden: include hidden files/dirs starting with '.' (default: False)
+
+            Examples:
+              shell_ls(".")                              — flat listing of current dir
+              shell_ls("src", tree=True)                 — ASCII tree of src/
+              shell_ls(".", depth=2, long_format=True)   — recursive 2 levels with sizes
+              shell_ls(".", depth=0)                     — full recursive listing
+            """
             # Uses Rust std::fs::read_dir — cross-platform, no system shell required.
-            return await _sc("shell.ls", {"path": path, "long": long_format})
+            return await _sc("shell.ls", {
+                "path":        path,
+                "long":        long_format,
+                "tree":        tree,
+                "depth":       depth,
+                "show_hidden": show_hidden,
+            })
 
         @agent.tool_plain
         async def shell_find(path: str = ".", pattern: str = "*", file_type: str = "") -> str:

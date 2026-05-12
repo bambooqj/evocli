@@ -785,27 +785,116 @@ pub async fn dispatch(
                 .as_str()
                 .map(PathBuf::from)
                 .unwrap_or(cwd.clone());
-            let long = args["long"].as_bool().unwrap_or(false);
-            let mut entries: Vec<serde_json::Value> = vec![];
-            if path.exists() {
-                for e in std::fs::read_dir(&path).into_iter().flatten().flatten() {
-                    let meta = e.metadata().ok();
-                    let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if long {
-                        entries.push(
-                            serde_json::json!({"name": name, "is_dir": is_dir, "size": size}),
-                        );
-                    } else {
-                        entries.push(serde_json::json!(name));
+            let long         = args["long"].as_bool().unwrap_or(false);
+            let tree         = args["tree"].as_bool().unwrap_or(false);
+            let depth        = args["depth"].as_u64().unwrap_or(1) as usize; // 1=flat, 0=unlimited
+            let show_hidden  = args["show_hidden"].as_bool().unwrap_or(false);
+
+            if tree {
+                // Tree-format output as a single string
+                let mut buf = String::new();
+                buf.push_str(&format!("{}\n", path.display()));
+                fn write_tree(
+                    dir: &std::path::Path,
+                    prefix: &str,
+                    buf: &mut String,
+                    current_depth: usize,
+                    max_depth: usize,
+                    show_hidden: bool,
+                ) {
+                    let Ok(mut entries) = std::fs::read_dir(dir) else { return };
+                    let mut items: Vec<_> = entries
+                        .flatten()
+                        .filter(|e| {
+                            show_hidden || !e.file_name().to_string_lossy().starts_with('.')
+                        })
+                        .collect();
+                    items.sort_by_key(|e| {
+                        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        (!is_dir, e.file_name())  // dirs first, then alpha
+                    });
+                    let total = items.len();
+                    for (i, entry) in items.iter().enumerate() {
+                        let is_last  = i + 1 == total;
+                        let connector = if is_last { "└── " } else { "├── " };
+                        let child_prefix = if is_last { "    " } else { "│   " };
+                        let name    = entry.file_name().to_string_lossy().to_string();
+                        let is_dir  = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        let display = if is_dir { format!("{name}/") } else { name };
+                        buf.push_str(&format!("{prefix}{connector}{display}\n"));
+                        if is_dir && (max_depth == 0 || current_depth < max_depth) {
+                            write_tree(
+                                &entry.path(),
+                                &format!("{prefix}{child_prefix}"),
+                                buf,
+                                current_depth + 1,
+                                max_depth,
+                                show_hidden,
+                            );
+                        }
                     }
                 }
+                write_tree(&path, "", &mut buf, 1, depth, show_hidden);
+                Ok(serde_json::json!({
+                    "path":   path.display().to_string(),
+                    "tree":   buf,
+                    "format": "tree",
+                }))
+            } else {
+                // Flat or recursive JSON listing
+                fn collect_entries(
+                    dir: &std::path::Path,
+                    current_depth: usize,
+                    max_depth: usize,
+                    long: bool,
+                    show_hidden: bool,
+                ) -> Vec<serde_json::Value> {
+                    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+                    let mut items: Vec<_> = rd.flatten()
+                        .filter(|e| {
+                            show_hidden || !e.file_name().to_string_lossy().starts_with('.')
+                        })
+                        .collect();
+                    items.sort_by_key(|e| {
+                        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        (!is_dir, e.file_name())
+                    });
+                    let mut out = vec![];
+                    for e in items {
+                        let meta   = e.metadata().ok();
+                        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                        let size   = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let name   = e.file_name().to_string_lossy().to_string();
+                        if long {
+                            out.push(serde_json::json!({
+                                "name":   name,
+                                "is_dir": is_dir,
+                                "size":   size,
+                            }));
+                        } else {
+                            out.push(serde_json::json!(
+                                if is_dir { format!("{name}/") } else { name }
+                            ));
+                        }
+                        if is_dir && (max_depth == 0 || current_depth < max_depth) {
+                            out.extend(collect_entries(&e.path(), current_depth + 1, max_depth, long, show_hidden));
+                        }
+                    }
+                    out
+                }
+                let entries = if path.exists() {
+                    collect_entries(&path, 1, depth, long, show_hidden)
+                } else {
+                    vec![]
+                };
+                let count = entries.len();
+                Ok(serde_json::json!({
+                    "path":    path.display().to_string(),
+                    "entries": entries,
+                    "count":   count,
+                    "depth":   depth,
+                }))
             }
-            let count = entries.len();
-            Ok(
-                serde_json::json!({"path": path.display().to_string(), "entries": entries, "count": count}),
-            )
         }
         "shell.cat" => {
             let file = args["file"].as_str().unwrap_or("");

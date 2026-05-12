@@ -745,3 +745,4 @@ def stats() -> dict:
         "litellm_only": sum(1 for t in REGISTRY if not t.pydantic),
     }
 
+
