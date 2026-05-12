@@ -1685,7 +1685,8 @@ class EvoCLIAgent:
         async for chunk in self._stream_litellm(full_input, ctx, prior_history=prior_history):
             yield chunk
     
-    async def _run_litellm(self, user_input: str, ctx: dict) -> str:
+    async def _run_litellm(self, user_input: str, ctx: dict,
+                           prior_history: list[dict] | None = None) -> str:
         """Raw LiteLLM fallback with tool calling loop."""
         import litellm
         from evocli_soul.llm_client import LLMClient
@@ -1714,8 +1715,11 @@ class EvoCLIAgent:
             )
         conversation = [
             {"role": "system", "content": system},
-            {"role": "user", "content": user_input},
         ]
+        if prior_history:
+            conversation.extend(prior_history)
+            log.debug("_run_litellm: injecting %d history messages", len(prior_history))
+        conversation.append({"role": "user", "content": user_input})
         
         tools = self._build_tool_definitions()
 
@@ -1910,24 +1914,51 @@ class EvoCLIAgent:
         # Read stream timeout from config [agent] section (default 30s)
         _stream_timeout = float((self.config or {}).get("agent", {}).get("stream_timeout_s", 30))
 
-        # Try streaming WITHOUT tools first — many providers handle stream+tools
-        # poorly or not at all. If the model requests tools in the stream (finish_reason="tool_calls"),
-        # we detect it and fall back to _run_litellm which has a proper tool loop.
-        # This avoids both: (a) broken partial-delta tool calls, and (b) providers
-        # rejecting stream=True+tools entirely.
+        # Stream WITH tools so the model can legally signal finish_reason="tool_calls".
+        # Some providers reject stream=True when tools= is present; we detect that error
+        # and fall back to text-only streaming (degraded mode: model can narrate but not act).
+        tools = self._build_tool_definitions()
+        stream_call_kwargs: dict = {
+            "model":      tier,
+            "messages":   messages,
+            "tools":      tools,
+            "stream":     True,
+            "max_tokens": 2048,
+        }
+        _tools_in_stream = True  # whether tools= was accepted by the provider
         try:
             response = await asyncio.wait_for(
-                llm._router.acompletion(
-                    model=tier,
-                    messages=messages,
-                    stream=True, max_tokens=2048,
-                ),
+                llm._router.acompletion(**stream_call_kwargs),
                 timeout=_stream_timeout,
             )
-        except asyncio.TimeoutError:
-            log.error("_stream_litellm: LLM API call timed out after %.0fs (model=%s)", _stream_timeout, tier)
-            yield f"\n\n⚠️ LLM API timed out ({_stream_timeout:.0f}s). Check your API key and network, then try again."
-            return
+        except Exception as _stream_tools_err:
+            # Provider rejected stream+tools (e.g. older Ollama, some Azure configs).
+            # Retry without tools= — model degrades to text-only narration.
+            _err_str = str(_stream_tools_err).lower()
+            _is_compat_err = any(k in _err_str for k in (
+                "tool", "function", "not supported", "invalid", "unsupported",
+            ))
+            if _is_compat_err:
+                log.warning("_stream_litellm: provider rejected stream+tools (%s), retrying text-only", type(_stream_tools_err).__name__)
+                _tools_in_stream = False
+                try:
+                    response = await asyncio.wait_for(
+                        llm._router.acompletion(
+                            model=tier, messages=messages,
+                            stream=True, max_tokens=2048,
+                        ),
+                        timeout=_stream_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    log.error("_stream_litellm: LLM API call timed out after %.0fs (model=%s)", _stream_timeout, tier)
+                    yield f"\n\n⚠️ LLM API timed out ({_stream_timeout:.0f}s). Check your API key and network, then try again."
+                    return
+            elif isinstance(_stream_tools_err, asyncio.TimeoutError):
+                log.error("_stream_litellm: LLM API call timed out after %.0fs (model=%s)", _stream_timeout, tier)
+                yield f"\n\n⚠️ LLM API timed out ({_stream_timeout:.0f}s). Check your API key and network, then try again."
+                return
+            else:
+                raise
 
         text_yielded = False
         finish_reason = None
@@ -1943,13 +1974,16 @@ class EvoCLIAgent:
             if hasattr(choice, 'finish_reason') and choice.finish_reason:
                 finish_reason = choice.finish_reason
 
-        # If the model wanted to call tools but we ran in text-only stream mode,
+        # If the model signalled tool use (possible because we passed tools= above),
         # fall back to _run_litellm which has a proper tool-calling loop.
-        # The user sees a brief indicator, then the tool-augmented response.
-        if finish_reason in ("tool_calls", "function_call") and not text_yielded:
+        # We also pass prior_history so the tool loop has full multi-turn context.
+        # Guard: only route when tools were accepted in the streaming call; if the
+        # provider rejected stream+tools we already degraded to text-only and the
+        # finish_reason will never be "tool_calls".
+        if _tools_in_stream and finish_reason in ("tool_calls", "function_call") and not text_yielded:
             log.info("_stream_litellm: model requested tools (finish_reason=%s), routing to _run_litellm", finish_reason)
             yield "\n\n"
-            tool_result = await self._run_litellm(user_input, ctx)
+            tool_result = await self._run_litellm(user_input, ctx, prior_history=prior_history)
             if tool_result:
                 yield tool_result
 
