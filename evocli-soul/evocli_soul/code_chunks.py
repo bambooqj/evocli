@@ -40,8 +40,8 @@ log = logging.getLogger("evocli.code_chunks")
 COLLECTION = "code_chunks"
 # Max function body lines to embed (避免超长类/文件爆内存)
 MAX_BODY_LINES = 150
-# Min body lines — skip one-liners
-MIN_BODY_LINES = 2
+# Min body lines — 1 allows single-line functions (e.g. dispatch stubs, trait impls)
+MIN_BODY_LINES = 1
 
 
 class CodeChunkIndex:
@@ -217,11 +217,19 @@ class CodeChunkIndex:
         ingested = skipped = errors = 0
 
         # Build existing hash map to detect unchanged symbols
+        # Hash key format: "{chunk_id}:{embed_version}" — bumping version forces re-embed
+        # when embedding strategy changes (e.g. we now include filename+signature).
+        EMBED_VERSION = "v2"  # bump when embedding text format changes
         existing_hashes: dict[str, str] = {}
         if not force:
             try:
                 rows = tbl.search().where(f"project_id = '{pid}'").select(["id", "body_hash"]).to_list()
-                existing_hashes = {r["id"]: r["body_hash"] for r in rows}
+                # Only skip if hash matches AND embed version matches
+                existing_hashes = {
+                    r["id"]: r["body_hash"]
+                    for r in rows
+                    if r["body_hash"].endswith(f":{EMBED_VERSION}")
+                }
             except Exception:
                 pass
 
@@ -247,15 +255,40 @@ class CodeChunkIndex:
             if not body:
                 continue
 
-            bh = self._body_hash(body)
+            # body_hash includes embed version so format changes trigger re-embed
+            bh = self._body_hash(body) + f":{EMBED_VERSION}"
             chunk_id = f"{file_path}:{line_start}"
 
-            # Skip if unchanged
+            # Skip if unchanged (same body AND same embed version)
             if not force and existing_hashes.get(chunk_id) == bh:
                 skipped += 1
                 continue
 
-            vec = self._embed(f"{name}\n{body}")
+            # ── Embedding text construction ──────────────────────────────
+            # Strategy: prioritize identity (name + file) + signature,
+            # then body content. This helps ranking:
+            #   - "fetch" in web_tools.rs ranks above helper functions
+            #     because name+file identity anchors the top result
+            #   - Public/exported functions are naturally in more specific files
+            import os as _os
+            file_basename = _os.path.basename(file_path)
+            # Visibility prefix: "pub fn" / "def" signals public API
+            is_public = (
+                signature.startswith("pub ") or
+                (language == "python" and not name.startswith("_"))
+            )
+            # Build embed text: identity section + signature + body
+            # Repeat name twice to strengthen its weight in the vector
+            identity = f"{name} {name}"
+            if is_public:
+                identity = f"public {identity}"
+            embed_text = (
+                f"{identity} in {file_basename}\n"
+                f"{signature}\n"
+                f"{body[:2000]}"  # cap body to avoid token overflow
+            )
+
+            vec = self._embed(embed_text)
             if vec is None:
                 errors += 1
                 continue
