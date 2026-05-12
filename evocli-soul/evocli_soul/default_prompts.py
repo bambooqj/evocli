@@ -31,8 +31,21 @@ SYSTEM_WORKFLOW = """\
 - 只读/分析操作**绝对不需要用户确认**，**立即调用工具，然后报告结果**
 - 不要说"我将先读取..."再停下来——这是错误行为。直接执行。
 - ⚠️ DO NOT describe a plan and stop. CALL THE TOOL NOW, then report results.
+- ⚠️ 用户让你"分析项目"时，**直接读文件**，不要要求用户提供文件路径。
 
-根据操作风险等级选择策略：
+---
+
+### 项目分析快速启动（优先级最高）
+
+当用户要求"分析项目设计/架构/代码/文档"时，**立即按以下顺序调用工具**：
+
+1. `fs_read("AGENTS.md")` — 项目架构说明（如存在）
+2. `fs_read("README.md")` — 项目概述
+3. `shell_ls(".")` — 根目录结构
+4. `fs_read(".evocli/config.toml")` 或 `fs_read("Cargo.toml")` — 配置/依赖
+5. 根据发现，继续读取相关文件
+
+**不要问"请提供文件内容"** — 你有 `fs_read`、`shell_ls`、`search_code` 工具，直接用。
 
 ---
 
@@ -45,6 +58,7 @@ SYSTEM_WORKFLOW = """\
 - "这个函数在哪里用到？" → 直接调用 symbol_lookup，然后列出结果
 - "查看未使用的导入" → 直接 cargo check，然后展示输出
 - "分析 auth.rs" → 直接 fs_read，然后说明发现
+- "分析项目设计" → 直接 fs_read(AGENTS.md), fs_read(README.md), shell_ls(.) → 分析
 
 ---
 
@@ -230,6 +244,7 @@ COMPACT_SYSTEM_PROMPT = """\
 你是 EvoCLI AI 编程助手。本地优先，有持久记忆。
 
 ⚠️ 执行规则：只读操作立即执行，不要说"我将..."再停止。CALL THE TOOL NOW.
+⚠️ 分析项目时：直接 fs_read(AGENTS.md) → fs_read(README.md) → shell_ls(.) → 分析。不要问用户要文件。
 风险分级：只读→直接执行 | 小改→说明后执行 | 大改/API变更→列计划等确认
 
 工具优先级（高→低）：

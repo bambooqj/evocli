@@ -18,3 +18,5 @@ soul_bridge.workspace = true
 tui-textarea = "0.7"
 # Home directory resolution (for debug log path)
 dirs.workspace = true
+# Clipboard support — Ctrl+Y copies last AI message
+arboard = { version = "3", default-features = false }

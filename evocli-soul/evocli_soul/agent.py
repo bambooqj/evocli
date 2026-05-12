@@ -1483,6 +1483,22 @@ class EvoCLIAgent:
             try:
                 result = await self._agent.run(full_input)
                 reply = str(getattr(result, "output", None) or getattr(result, "data", "") or "")
+                # Emit cost_update with real token counts from pydantic-ai RunResult.usage()
+                try:
+                    from evocli_soul.rpc import emit_event as _emit_pai_cost
+                    _usage = result.usage() if callable(getattr(result, "usage", None)) else None
+                    if _usage is not None:
+                        _in  = int(getattr(_usage, "request_tokens",  0) or 0)
+                        _out = int(getattr(_usage, "response_tokens", 0) or 0)
+                        if _in > 0 or _out > 0:
+                            await _emit_pai_cost("cost_update", {
+                                "input_tokens":  _in,
+                                "output_tokens": _out,
+                                "cost_usd":      0.0,  # pydantic-ai doesn't expose cost directly
+                            })
+                            log.debug("pydantic-ai run usage: in=%d out=%d", _in, _out)
+                except Exception as _ue:
+                    log.debug("pydantic-ai run cost_update failed (non-fatal): %s", _ue)
                 if reply:
                     try:
                         import evocli_soul.state as _st_persist
@@ -1704,6 +1720,22 @@ class EvoCLIAgent:
                 async with self._agent.run_stream(full_input) as result:
                     async for chunk in result.stream_text(delta=True):
                         yield chunk
+                # After stream ends, emit cost_update with real usage from pydantic-ai.
+                try:
+                    from evocli_soul.rpc import emit_event as _emit_pai_stream_cost
+                    _usage = result.usage() if callable(getattr(result, "usage", None)) else None
+                    if _usage is not None:
+                        _in  = int(getattr(_usage, "request_tokens",  0) or 0)
+                        _out = int(getattr(_usage, "response_tokens", 0) or 0)
+                        if _in > 0 or _out > 0:
+                            await _emit_pai_stream_cost("cost_update", {
+                                "input_tokens":  _in,
+                                "output_tokens": _out,
+                                "cost_usd":      0.0,
+                            })
+                            log.debug("pydantic-ai stream usage: in=%d out=%d", _in, _out)
+                except Exception as _ue:
+                    log.debug("pydantic-ai stream cost_update failed (non-fatal): %s", _ue)
                 return
             except Exception as e:
                 log.warning("Pydantic AI stream failed (%s), falling back", e)
@@ -1957,6 +1989,9 @@ class EvoCLIAgent:
             "stream":      True,
             "max_tokens":  _stream_task_params.get("max_tokens",  2048),
             "temperature": _stream_task_params.get("temperature", 0.7),
+            # Request usage in the final streaming chunk so we can emit cost_update.
+            # Not all providers support this; non-fatal if absent.
+            "stream_options": {"include_usage": True},
         }
         _tools_in_stream = True  # whether tools= was accepted by the provider
         try:
@@ -1981,6 +2016,7 @@ class EvoCLIAgent:
                             stream=True,
                             max_tokens=_stream_task_params.get("max_tokens", 2048),
                             temperature=_stream_task_params.get("temperature", 0.7),
+                            stream_options={"include_usage": True},
                         ),
                         timeout=_stream_timeout,
                     )
@@ -1998,7 +2034,11 @@ class EvoCLIAgent:
         text_yielded = False
         tool_call_seen = False  # True if any delta contained tool_calls (even partial)
         finish_reason = None
+        _stream_usage = None   # accumulated usage from stream_options include_usage chunk
         async for chunk in response:
+            # Capture usage from the final usage-reporting chunk (stream_options include_usage=True)
+            if hasattr(chunk, 'usage') and chunk.usage is not None:
+                _stream_usage = chunk.usage
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
@@ -2036,14 +2076,14 @@ class EvoCLIAgent:
                 yield tool_result
 
         # After streaming completes, emit cost_update with real token counts.
-        # litellm includes usage in the last streaming chunk when stream_options
-        # {"include_usage": True} is passed, but as a fallback we also check
-        # response.usage which some providers populate after the stream ends.
+        # Priority: (1) usage from stream_options include_usage final chunk,
+        #           (2) response.usage populated post-stream by some providers,
+        #           (3) _hidden_params fallback.
         try:
             from evocli_soul.rpc import emit_event as _emit_cost
-            # Collect usage from the response object (available after iteration)
-            usage = getattr(response, 'usage', None)
-            # Also try last_chunk accumulator that some litellm versions provide
+            usage = _stream_usage  # from include_usage chunk (most reliable)
+            if usage is None:
+                usage = getattr(response, 'usage', None)
             if usage is None:
                 try:
                     usage = response._hidden_params.get("response_cost_dict", {})

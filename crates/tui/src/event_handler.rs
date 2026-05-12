@@ -157,6 +157,15 @@ pub fn handle_key_event(
             // ── Interrupt ────────────────────────────────────────────────
             KeyCode::Esc => return EventAction::Interrupt,
 
+            // ── Ctrl+Y: copy last AI message (works even during streaming) ──
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                match app.copy_last_message_to_clipboard() {
+                    Ok(n)  => app.notify(format!("✓ Copied {n} chars"), crate::app::NotifLevel::Info),
+                    Err(e) => app.notify(format!("✗ {e}"), crate::app::NotifLevel::Warn),
+                }
+                return EventAction::None;
+            }
+
             // ── Enter while busy → queue the message ─────────────────────
             KeyCode::Enter => {
                 // Shift+Enter / Alt+Enter → insert newline (multi-line compose)
@@ -261,8 +270,21 @@ pub fn handle_key_event(
                     .map(|(cmd, desc)| format!("  {:<24} {}", cmd, desc))
                     .collect::<Vec<_>>()
                     .join("\n");
+                let shortcuts = "\
+Keyboard shortcuts:\n\
+  Ctrl+Y                   Copy last AI message to clipboard\n\
+  Ctrl+C                   Quit\n\
+  Ctrl+L                   Clear screen\n\
+  PageUp / PageDown        Scroll chat\n\
+  Home / End               Scroll to top / bottom\n\
+  Alt+Up / Alt+Down        Scroll 5 rows\n\
+  F12                      Toggle debug log\n\
+  Esc                      Interrupt AI / dismiss input\n\
+  Shift+drag               Native terminal text selection (bypass mouse capture)\n\
+\n\
+Slash commands:";
                 app.messages.push(ChatMessage::System(
-                    format!("Available commands:\n{cmds}")
+                    format!("{shortcuts}\n{cmds}")
                 ));
                 app.invalidate_cache();  // message list changed
                 return EventAction::None;
@@ -342,6 +364,27 @@ pub fn handle_key_event(
             app.messages.retain(|m| matches!(m, ChatMessage::System(_)));
             app.messages.push(ChatMessage::System("Screen cleared. (Ctrl+L)".into()));
             app.invalidate_cache();  // message list changed
+            EventAction::None
+        }
+
+        // Ctrl+Y → 复制最后一条 AI 消息到系统剪贴板
+        // （Ctrl+C 已绑定退出，所以用 Y = Yank，类似 Vim 惯例）
+        // 提示：在大多数终端中，按住 Shift 再拖鼠标可绕过鼠标捕获实现原生文本选择
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            match app.copy_last_message_to_clipboard() {
+                Ok(n) => {
+                    app.notify(
+                        format!("✓ Copied {n} chars to clipboard"),
+                        crate::app::NotifLevel::Info,
+                    );
+                }
+                Err(e) => {
+                    app.notify(
+                        format!("✗ {e}"),
+                        crate::app::NotifLevel::Warn,
+                    );
+                }
+            }
             EventAction::None
         }
 

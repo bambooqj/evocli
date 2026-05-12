@@ -160,8 +160,8 @@ pub const STREAM_REDRAW_EVERY: u8 = 3;
 
 /// 所有支持的 / 命令
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help",           "Show available commands and tips"),
-    ("/?",              "Show available commands and tips (alias)"),
+    ("/help",           "Show available commands and keyboard shortcuts"),
+    ("/?",              "Show available commands (alias)"),
     ("/compress",       "Compress session history to free context space"),
     ("/compact",        "Compress session history to free context space (alias)"),
     ("/add <file>",     "Pin a file to context for all turns"),
@@ -327,13 +327,22 @@ impl App {
     pub fn finish_streaming(&mut self, tokens: usize) {
         // Same rev().find() pattern as append_token: locate the last Assistant
         // message even if soul_status / event System messages were pushed after it.
+        //
+        // NOTE: `tokens` here is the streaming chunk COUNT, not a real token count.
+        // Real token counts arrive via the `cost_update` event from Python Soul and
+        // update `tokens_input`/`tokens_output` separately in handle_soul_event().
+        // We do NOT add `tokens` to tokens_used/tokens_output here to avoid double-
+        // counting with cost_update. The message badge is updated once cost_update
+        // arrives with accurate numbers.
         let content_empty = {
             if let Some(ChatMessage::Assistant { tokens: t, content, .. }) = self.messages
                 .iter_mut()
                 .rev()
                 .find(|m| matches!(m, ChatMessage::Assistant { .. }))
             {
-                *t = tokens;
+                // Badge shows "?" until cost_update arrives with real count.
+                // 0 means "not yet known" — ui.rs renders this as no badge.
+                *t = 0;
                 content.trim().is_empty()
             } else {
                 false
@@ -350,8 +359,9 @@ impl App {
             ));
         }
 
-        self.tokens_used   += tokens;
-        self.tokens_output += tokens;
+        // Do NOT update tokens_used/tokens_output here.
+        // cost_update event from Python Soul has the accurate numbers.
+        // Updating here would double-count when cost_update arrives.
         self.state = AppState::Idle;
         self.stream_skip_frames = 0;
         self.cache_dirty = true;
@@ -452,6 +462,34 @@ impl App {
     /// Ctrl+End / End — scroll to bottom (newest messages).
     pub fn scroll_to_bottom(&mut self) {
         self.scroll = usize::MAX;  // clamped to max_scroll in draw_chat_area
+    }
+
+    /// Extract the plain text of the last Assistant message (for clipboard copy).
+    /// Returns None if no assistant message exists yet.
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.messages.iter().rev().find_map(|m| {
+            if let ChatMessage::Assistant { content, .. } = m {
+                if !content.is_empty() {
+                    Some(content.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Copy the last Assistant message to the system clipboard via arboard.
+    /// Returns Ok(chars_copied) on success, Err(description) on failure.
+    pub fn copy_last_message_to_clipboard(&self) -> Result<usize, String> {
+        let text = self.last_assistant_text()
+            .ok_or_else(|| "No AI message to copy".to_string())?;
+        let len = text.chars().count();
+        arboard::Clipboard::new()
+            .and_then(|mut cb| cb.set_text(text))
+            .map_err(|e| format!("Clipboard error: {e}"))?;
+        Ok(len)
     }
 
     /// Invalidate the render cache. Call after any message mutation.
