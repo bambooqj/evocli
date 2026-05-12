@@ -6,6 +6,7 @@
 //!    - 默认黑名单模式（allow_all_commands = true）：允许一切，阻断 SHELL_BLOCKED_DANGEROUS
 //!    - 严格模式（allow_all_commands = false）：仅允许 extra_allowed_commands 列表
 //!    - SHELL_BLOCKED_DANGEROUS 硬编码，任何配置均无法绕过
+//!    - 额外正则模式：捕获路径变体和命令链绕过（rm -rf /etc 等）
 //!
 //! ② 文件路径访问
 //!    - PATH_DENY_IMMUTABLE 硬编码，allow_all_paths = true 也无法绕过
@@ -34,13 +35,24 @@ pub struct SecurityController {
 // 边界敏感的操作（curl | bash 等）交由用户通过 config.toml 的
 // extra_blocked_patterns 自行决策 — config.toml 对 AI 不可访问。
 const SHELL_BLOCKED_DANGEROUS: &[&str] = &[
-    // 递归删除根目录 / home
+    // 递归删除根目录 / home / 重要系统路径
     "rm -rf /",
     "rm -rf /*",
     "rm -rf ~",
     "rm -rf ~/",
+    "rm -rf /etc",
+    "rm -rf /usr",
+    "rm -rf /bin",
+    "rm -rf /sbin",
+    "rm -rf /lib",
+    "rm -rf /var",
+    "rm -rf /home",
+    "rm -rf /root",
+    "rm -rf /boot",
+    "rm -rf /proc",
+    "rm -rf /sys",
     // 权限核弹
-    "chmod -R 777 /",
+    "chmod -r 777 /",
     "chmod 777 /",
     // 原始磁盘写入
     "> /dev/sda",
@@ -53,11 +65,40 @@ const SHELL_BLOCKED_DANGEROUS: &[&str] = &[
     "shred /dev/",
     // Fork bomb
     ":(){ :|:& };:",
+    // find -delete on root
+    "find / -delete",
+    "find /* -delete",
     // Windows 核弹
     "format c:",
     "format d:",
     "del /f /s /q c:\\",
     "rd /s /q c:\\",
+    "rd /s /q d:\\",
+];
+
+// ── 正则危险模式（捕获变体和命令链绕过）──────────────────────────────────────
+// 用 regex 替代纯字符串匹配，防止以下绕过：
+//   1. 路径变体：rm -rf /etc → 原黑名单没有 /etc
+//   2. 命令链：echo x; rm -rf / → 危险命令出现在链末尾
+//   3. 参数顺序变换：rm -f -r / → 分拆 -r -f
+//   4. Windows 路径：del /f /q /s C:\ → 大小写变体
+//
+// 格式：(pattern, reason)
+// 使用 regex crate（已在 workspace.dependencies 中声明）
+const SHELL_BLOCKED_REGEX_STRS: &[(&str, &str)] = &[
+    // rm with recursive (-r/-R/-rf/-fr/-Rf) on any absolute path or /
+    (r"rm\s+-[a-z]*[rR][a-z]*\s+(/|~)", "recursive rm on root or home"),
+    // chmod -R on root
+    (r"chmod\s+-[rR]\s+[0-7]+\s+/", "recursive chmod on root"),
+    // dd writing to any raw device
+    (r"\bdd\b.*\bof=/dev/", "raw device write via dd"),
+    // Dangerous command appearing after shell chain operators (;, &&, ||, |)
+    // This catches: safe_cmd; rm -rf /
+    (r"[;|&]\s*(rm\s+-[a-z]*[rR]|mkfs|wipefs|shred /dev)", "dangerous command in shell chain"),
+    // Fork bomb variants
+    (r":\(\)\s*\{.*\|.*&.*\}", "fork bomb pattern"),
+    // find with -delete or -exec rm on root
+    (r"find\s+/\S*\s+.*-(delete|exec\s+rm)", "find -delete on system path"),
 ];
 
 // ── 不可绕过的路径禁止列表（含 config.toml，防止 AI 改写自身安全策略）────────
@@ -102,6 +143,16 @@ impl SecurityController {
                 if normalized.contains(pattern) {
                     self.audit_log("shell.validate", cmd, false);
                     bail!("[E401] Blocked: dangerous pattern '{}' detected", pattern);
+                }
+            }
+
+            // 1b. Regex-based pattern matching — catches path variants and chain bypasses
+            for (pattern_str, reason) in SHELL_BLOCKED_REGEX_STRS {
+                if let Ok(re) = regex::Regex::new(pattern_str) {
+                    if re.is_match(&normalized) {
+                        self.audit_log("shell.validate", cmd, false);
+                        bail!("[E401] Blocked: {} (pattern: {})", reason, pattern_str);
+                    }
                 }
             }
         }

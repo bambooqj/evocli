@@ -59,3 +59,6 @@ mcp = { path = "../mcp" }
 # Knowledge Graph (GitNexus-inspired: BM25 + community detection + blast radius)
 # Used by tool_dispatch.rs for code_intel.bm25_search / blast_radius / communities / symbol_context
 knowledge_graph = { path = "../knowledge_graph" }
+
+# Regex (for security.rs pattern-based shell command validation)
+regex.workspace = true
