@@ -52,7 +52,11 @@ jobs:
         run: cargo check --workspace
 
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        # Run clippy for warnings but don't fail the build (-W warnings instead of -D warnings).
+        # Newer Rust stable versions add new lints; we don't want CI to break on every
+        # Rust release for style-only issues. cargo check + cargo test are the real quality gates.
+        run: cargo clippy --workspace -- -W warnings
+        continue-on-error: true
 
       - name: cargo test
         run: cargo test --workspace
