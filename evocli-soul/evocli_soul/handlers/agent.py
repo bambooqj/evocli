@@ -408,23 +408,14 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
                 "我将", "我会先", "让我先", "首先我会", "我打算", "我需要先",
                 "I will", "Let me first", "I'll start", "I need to first",
             ]
-            _SAFE_ONLY_CHECK = [
-                "删除", "重写", "重构整个", "修改所有", "清空",
-                "delete all", "rewrite all", "refactor entire",
+            # Write/destructive intent: do NOT auto-continue (wait for user confirmation)
+            _WRITE_INTENT_PHRASES = [
+                "删除", "重写", "重构整个", "修改所有", "清空", "创建", "新建", "替换所有",
+                "delete", "remove", "rewrite", "refactor", "create new", "replace all",
+                "modify all", "update all",
             ]
-            # Only auto-continue when the user's ORIGINAL INTENT was clearly read-only.
-            # This prevents false triggers on write requests that the model described
-            # but didn't execute (those should wait for user confirmation per Strategy C).
-            _READ_INTENT_PHRASES = [
-                "读", "看", "查", "分析", "搜索", "列出", "找到", "是什么", "在哪",
-                "read", "show", "find", "search", "analyze", "list", "look",
-                "what is", "where is", "how does", "explain", "describe",
-                "检查", "查看", "获取", "展示",
-            ]
-            _is_planning   = any(p in assistant_reply for p in _PLAN_PHRASES)
-            _is_destructive = any(d in assistant_reply for d in _SAFE_ONLY_CHECK)
-            # Gate on read-only user intent to prevent false auto-continue on write requests
-            _is_read_intent = any(p in prompt.lower() for p in _READ_INTENT_PHRASES)
+            _is_planning    = any(p in assistant_reply for p in _PLAN_PHRASES)
+            _is_write_intent = any(p in prompt.lower() for p in _WRITE_INTENT_PHRASES)
 
             # Check if any tools were actually called this turn
             events = _st.drain_session_events()
@@ -434,7 +425,9 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             for ev in events:
                 _st.append_session_event(ev)
 
-            if _is_planning and not _tools_called and not _is_destructive and _is_read_intent:
+            # Inverted logic: auto-continue UNLESS user clearly wants writes/modifications.
+            # This is less error-prone than trying to enumerate all "read" phrases.
+            if _is_planning and not _tools_called and not _is_write_intent:
                 log.info("auto-continue: detected plan-without-execution, injecting follow-up")
                 # Emit hint to TUI
                 await emit_event("soul_status", {

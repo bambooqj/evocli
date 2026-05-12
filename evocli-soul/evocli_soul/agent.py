@@ -121,6 +121,7 @@ class EvoCLIAgent:
             if model is None:
                 log.warning("pydantic_ai: could not create model for provider=%s — using LiteLLM fallback", provider)
                 self._agent = None
+                self._fallback_reason = f"Could not create pydantic-ai model for provider={provider} model={fast_model}"
                 return
 
             constraints = "（无）"
@@ -150,10 +151,17 @@ class EvoCLIAgent:
             # 其余 50+ 工具保留在 _run_litellm fallback（tool_call loop）中。
             self._register_pydantic_tools(self._agent)
 
-            # 动态计算已注册工具数量（不再硬编码）
-            _n_tools = len(getattr(self._agent, '_function_tools', {})) or "?"
+            # 动态计算已注册工具数量（pydantic-ai 1.x 属性名有变化，多级 fallback）
+            _tool_count = (
+                # pydantic-ai >= 1.93: _function_toolset.tools
+                len(getattr(getattr(self._agent, '_function_toolset', None), 'tools', None) or {})
+                # pydantic-ai 1.x 旧版: _function_tools
+                or len(getattr(self._agent, '_function_tools', None) or {})
+                # 备用：无法获取时显示 ?
+                or "?"
+            )
             log.info("Pydantic AI Agent initialized: model=%s provider=%s tools=%s",
-                     fast_model, provider, _n_tools)
+                     fast_model, provider, _tool_count)
 
         except _ApiKeyMissingError as e:
             log.warning("API key not configured for %s. Using LiteLLM fallback. "
@@ -992,6 +1000,9 @@ class EvoCLIAgent:
                 if path_hint:
                     search_params["file"] = path_hint
                 symbols = await self.bridge.call("symbol.lookup", search_params)
+                # Normalize response: Rust may return list OR {"found":..,"symbols":[..]}
+                if isinstance(symbols, dict):
+                    symbols = symbols.get("symbols", []) or ([] if not symbols.get("found") else [symbols])
                 if not isinstance(symbols, list) or not symbols:
                     grep_result = await self.bridge.call("shell.grep", {
                         "pattern": rf"\b{symbol_name}\b", "path": path_hint or ".",
