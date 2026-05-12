@@ -125,10 +125,15 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
     # This avoids the dependency on Rust passing history (which it currently doesn't).
     if prompt.strip().lower() in ("/compress", "/compact"):
         import evocli_soul.state as _st_compress
-        session_id = params.get("session_id") or "default"
+        import os as _os_compress, hashlib as _hashlib_compress
+        # Use same cwd-derived session_id as main execution path for consistency
+        _explicit = params.get("session_id")
+        session_id = (_explicit if _explicit else
+                      "cwd_" + _hashlib_compress.md5(
+                          _os_compress.getcwd().encode(), usedforsecurity=False
+                      ).hexdigest()[:12])
         try:
             await send.stream_chunk(req_id, "⏳ Compressing session context…\n\n", done=False)
-            import evocli_soul.state as _st_compress
             events = list(_st_compress._session_events)  # read without draining
             llm = state.get_llm_client()
 
