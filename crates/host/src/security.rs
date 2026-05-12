@@ -1,25 +1,27 @@
 //! security.rs — SecurityController
 //!
-//! 安全模型（两层）：
+//! 安全模型（两层），**全部由 config.toml 驱动，无任何硬编码列表**：
 //!
 //! ① 命令执行（shell.run）
-//!    - 默认黑名单模式（allow_all_commands = true）：允许一切，阻断 SHELL_BLOCKED_DANGEROUS
-//!    - 严格模式（allow_all_commands = false）：仅允许 extra_allowed_commands 列表
-//!    - SHELL_BLOCKED_DANGEROUS 硬编码，任何配置均无法绕过
-//!    - 额外正则模式：捕获路径变体和命令链绕过（rm -rf /etc 等）
+//!    - 黑名单模式（allow_all_commands = true，默认）：允许一切，阻断 blocked_patterns
+//!    - 严格模式（allow_all_commands = false）：仅允许 allowed_commands + extra_allowed_commands
+//!    - block_dangerous_always=true：即使 allow_all 也阻断 blocked_patterns
 //!
 //! ② 文件路径访问
-//!    - PATH_DENY_IMMUTABLE 硬编码，allow_all_paths = true 也无法绕过
-//!      关键：.evocli/config.toml 在此列表 → AI 无法读写自身安全策略
-//!    - extra_denied_paths：用户在 config.toml 里追加
+//!    - denied_paths + extra_denied_paths：路径黑名单
+//!    - .evocli/config.toml 在代码层面兜底保护（AI 无法修改自身安全策略）
 //!
-//! config.toml 由人类管理，AI 无法访问（PATH_DENY_IMMUTABLE 保证）：
+//! config.toml 示例：
 //! ```toml
 //! [security]
-//! allow_all_commands = false                        # 切换严格模式
-//! extra_allowed_commands = ["docker", "kubectl"]    # 严格模式允许的命令
-//! extra_blocked_patterns = ["curl * | bash"]        # 追加危险模式
-//! extra_denied_paths = ["/prod"]                    # 追加禁止路径
+//! allow_all_commands    = true               # 黑名单模式（默认）
+//! block_dangerous_always = true              # 永远阻断高危操作
+//! allowed_commands      = ["cargo", "git"]   # 严格模式下的白名单
+//! extra_allowed_commands = ["docker"]        # 追加允许
+//! blocked_patterns      = ["rm -rf /", ...]  # 危险模式列表
+//! extra_blocked_patterns = ["curl|bash"]     # 追加危险模式
+//! denied_paths          = [".ssh", ...]      # 路径黑名单
+//! extra_denied_paths    = ["/prod"]          # 追加禁止路径
 //! ```
 
 use anyhow::{bail, Result};
@@ -28,107 +30,48 @@ use crate::config::SecurityConfig;
 
 pub struct SecurityController {
     cfg: SecurityConfig,
+    /// Compiled regex patterns from cfg.blocked_patterns (cached at construction)
+    blocked_regex: Vec<(regex::Regex, String)>,
 }
 
-// ── 永久危险模式（硬编码，任何配置均无法绕过）────────────────────────────────
-// 原则：只列真正不可逆的系统破坏操作。
-// 边界敏感的操作（curl | bash 等）交由用户通过 config.toml 的
-// extra_blocked_patterns 自行决策 — config.toml 对 AI 不可访问。
-const SHELL_BLOCKED_DANGEROUS: &[&str] = &[
-    // 递归删除根目录 / home / 重要系统路径
-    "rm -rf /",
-    "rm -rf /*",
-    "rm -rf ~",
-    "rm -rf ~/",
-    "rm -rf /etc",
-    "rm -rf /usr",
-    "rm -rf /bin",
-    "rm -rf /sbin",
-    "rm -rf /lib",
-    "rm -rf /var",
-    "rm -rf /home",
-    "rm -rf /root",
-    "rm -rf /boot",
-    "rm -rf /proc",
-    "rm -rf /sys",
-    // 权限核弹
-    "chmod -r 777 /",
-    "chmod 777 /",
-    // 原始磁盘写入
-    "> /dev/sda",
-    "> /dev/nvme",
-    "dd if=",
-    "dd of=/dev/",
-    // 格式化 / 抹盘
-    "mkfs",
-    "wipefs",
-    "shred /dev/",
-    // Fork bomb
-    ":(){ :|:& };:",
-    // find -delete on root
-    "find / -delete",
-    "find /* -delete",
-    // Windows 核弹
-    "format c:",
-    "format d:",
-    "del /f /s /q c:\\",
-    "rd /s /q c:\\",
-    "rd /s /q d:\\",
-];
-
-// ── 正则危险模式（捕获变体和命令链绕过）──────────────────────────────────────
-// 用 regex 替代纯字符串匹配，防止以下绕过：
-//   1. 路径变体：rm -rf /etc → 原黑名单没有 /etc
-//   2. 命令链：echo x; rm -rf / → 危险命令出现在链末尾
-//   3. 参数顺序变换：rm -f -r / → 分拆 -r -f
-//   4. Windows 路径：del /f /q /s C:\ → 大小写变体
-//
-// 格式：(pattern, reason)
-// 使用 regex crate（已在 workspace.dependencies 中声明）
-const SHELL_BLOCKED_REGEX_STRS: &[(&str, &str)] = &[
-    // rm with recursive (-r/-R/-rf/-fr/-Rf) on any absolute path or /
-    (r"rm\s+-[a-z]*[rR][a-z]*\s+(/|~)", "recursive rm on root or home"),
-    // chmod -R on root
-    (r"chmod\s+-[rR]\s+[0-7]+\s+/", "recursive chmod on root"),
-    // dd writing to any raw device
-    (r"\bdd\b.*\bof=/dev/", "raw device write via dd"),
-    // Dangerous command appearing after shell chain operators (;, &&, ||, |)
-    // This catches: safe_cmd; rm -rf /
-    (r"[;|&]\s*(rm\s+-[a-z]*[rR]|mkfs|wipefs|shred /dev)", "dangerous command in shell chain"),
-    // Fork bomb variants
-    (r":\(\)\s*\{.*\|.*&.*\}", "fork bomb pattern"),
-    // find with -delete or -exec rm on root
-    (r"find\s+/\S*\s+.*-(delete|exec\s+rm)", "find -delete on system path"),
-];
-
-// ── 不可绕过的路径禁止列表（含 config.toml，防止 AI 改写自身安全策略）────────
-const PATH_DENY_IMMUTABLE: &[&str] = &[
+// ── 代码级兜底保护（不可绕过，不在此列表的路径由 config 控制）─────────────────
+// 只保留最小集：防止 AI 修改自身安全配置（如果 config.toml 不包含则始终保护）
+const CONFIG_SELF_PROTECT: &[&str] = &[
     ".evocli/config.toml",
     ".evocli\\config.toml",
-    ".ssh",
-    ".gnupg",
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/sudoers",
-    "\\Windows\\System32",
 ];
 
 impl SecurityController {
     pub fn new(cfg: &SecurityConfig) -> Self {
-        let controller = Self { cfg: cfg.clone() };
+        // Pre-compile regex patterns for performance (avoid re-compiling per call)
+        // Blocked patterns that look like regex (contain \, ^, *, etc.) are compiled;
+        // plain substring patterns are matched directly in validate_shell_cmd.
+        let blocked_regex: Vec<(regex::Regex, String)> = cfg.blocked_patterns.iter()
+            .chain(cfg.extra_blocked_patterns.iter())
+            .filter(|p| p.contains('\\') || p.contains('^') || p.contains('('))
+            .filter_map(|p| {
+                regex::Regex::new(p).ok().map(|re| (re, p.clone()))
+            })
+            .collect();
+
+        let controller = Self { cfg: cfg.clone(), blocked_regex };
         if cfg.allow_all_commands {
             tracing::info!(
-                "[Security] blacklist mode (dangerous patterns {})",
-                if cfg.block_dangerous_always { "active" } else { "disabled" }
+                "[Security] blacklist mode — {} patterns, {} path rules",
+                cfg.blocked_patterns.len() + cfg.extra_blocked_patterns.len(),
+                cfg.denied_paths.len() + cfg.extra_denied_paths.len(),
             );
         } else {
-            tracing::info!("[Security] strict mode — only extra_allowed_commands permitted");
+            tracing::info!(
+                "[Security] strict mode — {} allowed commands",
+                cfg.allowed_commands.len() + cfg.extra_allowed_commands.len()
+            );
         }
         controller
     }
 
     pub fn default_config() -> Self {
-        Self { cfg: SecurityConfig::default() }
+        Self::new(&SecurityConfig::default())
     }
 
     pub fn validate_shell_cmd(&self, cmd: &str) -> Result<()> {
@@ -137,55 +80,50 @@ impl SecurityController {
             .collect::<Vec<_>>()
             .join(" ");
 
-        // 1. Hardcoded dangerous patterns — always checked
+        // 1. Dangerous patterns — always checked when block_dangerous_always=true
         if self.cfg.block_dangerous_always {
-            for pattern in SHELL_BLOCKED_DANGEROUS {
-                if normalized.contains(pattern) {
+            // Substring patterns (fast path)
+            for pattern in self.cfg.blocked_patterns.iter()
+                .chain(self.cfg.extra_blocked_patterns.iter())
+                .filter(|p| !p.contains('\\') && !p.contains('^') && !p.contains('('))
+            {
+                if normalized.contains(pattern.to_lowercase().as_str()) {
                     self.audit_log("shell.validate", cmd, false);
                     bail!("[E401] Blocked: dangerous pattern '{}' detected", pattern);
                 }
             }
 
-            // 1b. Regex-based pattern matching — catches path variants and chain bypasses
-            for (pattern_str, reason) in SHELL_BLOCKED_REGEX_STRS {
-                if let Ok(re) = regex::Regex::new(pattern_str) {
-                    if re.is_match(&normalized) {
-                        self.audit_log("shell.validate", cmd, false);
-                        bail!("[E401] Blocked: {} (pattern: {})", reason, pattern_str);
-                    }
+            // Regex patterns (pre-compiled)
+            for (re, reason) in &self.blocked_regex {
+                if re.is_match(&normalized) {
+                    self.audit_log("shell.validate", cmd, false);
+                    bail!("[E401] Blocked: dangerous pattern '{}' matched", reason);
                 }
             }
         }
 
-        // 2. User-defined extra blocked patterns (from config.toml, AI-inaccessible)
-        for pattern in &self.cfg.extra_blocked_patterns {
-            if normalized.contains(pattern.to_lowercase().as_str()) {
-                self.audit_log("shell.validate", cmd, false);
-                bail!("[E401] Blocked: pattern '{}' detected", pattern);
-            }
-        }
-
-        // 3. Blacklist mode (default): pass if not dangerous
+        // 2. Blacklist mode (default): pass if not dangerous
         if self.cfg.allow_all_commands {
             self.audit_log("shell.validate", cmd, true);
             return Ok(());
         }
 
-        // 4. Strict mode: only extra_allowed_commands (no hardcoded list — config-driven)
+        // 3. Strict whitelist mode: only allowed_commands + extra_allowed_commands
         let first_token = cmd.trim().split_whitespace().next().unwrap_or("");
         let binary = Path::new(first_token)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(first_token);
 
-        let allowed = self.cfg.extra_allowed_commands.iter()
+        let allowed = self.cfg.allowed_commands.iter()
+            .chain(self.cfg.extra_allowed_commands.iter())
             .any(|a| binary == a.as_str());
 
         if !allowed {
             self.audit_log("shell.validate", cmd, false);
             bail!(
-                "[E401] Strict mode: '{}' not allowed.\n\
-                 Edit ~/.evocli/config.toml:\n\
+                "[E401] Strict mode: '{}' not in allowed_commands.\n\
+                 Edit ~/.evocli/config.toml [security]:\n\
                  \x20 extra_allowed_commands = [\"{}\", ...]",
                 binary, binary,
             );
@@ -198,12 +136,14 @@ impl SecurityController {
     pub fn validate_path_access(&self, path: &Path) -> Result<()> {
         let path_str = path.to_string_lossy().to_lowercase();
 
-        // 1. Permanently denied paths — allow_all_paths cannot override these
-        for denied in PATH_DENY_IMMUTABLE {
-            if path_str.contains(&denied.to_lowercase()) {
+        // 1. Code-level self-protect: config.toml itself is ALWAYS off-limits.
+        // This is a minimal code-level guard (not in config) to prevent the AI
+        // from modifying its own security rules via any config manipulation.
+        for protected in CONFIG_SELF_PROTECT {
+            if path_str.contains(&protected.to_lowercase()) {
                 self.audit_log("path.validate", &path.display().to_string(), false);
                 bail!(
-                    "[E202] '{}' is permanently off-limits to the AI agent.",
+                    "[E202] '{}' is permanently protected (AI cannot modify security config).",
                     path.display()
                 );
             }
@@ -214,12 +154,13 @@ impl SecurityController {
             return Ok(());
         }
 
-        // 3. User-defined extra denied paths
-        for denied in &self.cfg.extra_denied_paths {
+        // 3. Config-driven denied paths (denied_paths + extra_denied_paths)
+        for denied in self.cfg.denied_paths.iter().chain(self.cfg.extra_denied_paths.iter()) {
             if path_str.contains(denied.to_lowercase().as_str()) {
                 self.audit_log("path.validate", &path.display().to_string(), false);
                 bail!(
-                    "[E202] '{}' denied by user rule '{}'",
+                    "[E202] '{}' denied by path rule '{}'.\n\
+                     Edit ~/.evocli/config.toml [security] denied_paths to customize.",
                     path.display(), denied
                 );
             }

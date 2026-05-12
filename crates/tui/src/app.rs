@@ -90,10 +90,18 @@ pub enum ChatMessage {
 pub struct App {
     pub messages:       Vec<ChatMessage>,
     pub state:          AppState,
+    /// Session-accumulated totals (for /cost command display).
+    /// tokens_input grows with each turn since it includes the full prompt+history.
     pub tokens_used:    usize,
     pub tokens_input:   usize,
     pub tokens_output:  usize,
     pub session_cost_usd: f64,
+    /// Current context window occupancy — SET (not accumulated) from the last
+    /// cost_update event's input_tokens. This is what the token bar should display:
+    /// "how full is my context window RIGHT NOW?"
+    pub current_ctx_tokens: usize,
+    /// Last turn's output token count (SET each cost_update, for ↓ display).
+    pub last_out_tokens:    usize,
     pub model_name:     String,
     pub project_dir:    String,
     /// Scroll offset in lines. 0=top (oldest), usize::MAX=bottom (clamped in ui.rs).
@@ -210,6 +218,8 @@ impl App {
             tokens_input:     0,
             tokens_output:    0,
             session_cost_usd: 0.0,
+            current_ctx_tokens: 0,
+            last_out_tokens:    0,
             model_name,
             project_dir,
             scroll:           0,

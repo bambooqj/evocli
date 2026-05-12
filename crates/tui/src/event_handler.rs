@@ -5,6 +5,12 @@ use tui_textarea::TextArea;
 
 use crate::app::{App, AppState, ChatMessage};
 
+fn fmt_k(n: usize) -> String {
+    if n >= 1_000_000 { format!("{:.1}M", n as f64 / 1_000_000.0) }
+    else if n >= 1_000 { format!("{:.1}k", n as f64 / 1_000.0) }
+    else { n.to_string() }
+}
+
 /// Actions that the main loop should take after handling a key event
 pub enum EventAction {
     None,
@@ -308,8 +314,13 @@ Slash commands:";
                     format!("${:.4}", app.session_cost_usd)
                 };
                 app.messages.push(ChatMessage::System(format!(
-                    "Session cost: {}  |  Tokens in: {}  out: {}  total: {}",
-                    cost, app.tokens_input, app.tokens_output, app.tokens_used
+                    "Session cost: {cost}  |  \
+                     Context now: ↑{}  Last output: ↓{}  |  \
+                     Session total: in={} out={}",
+                    fmt_k(app.current_ctx_tokens),
+                    fmt_k(app.last_out_tokens),
+                    fmt_k(app.tokens_input),
+                    fmt_k(app.tokens_output),
                 )));
                 app.invalidate_cache();  // message list changed
                 return EventAction::None;

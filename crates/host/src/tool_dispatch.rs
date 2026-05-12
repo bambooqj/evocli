@@ -8,13 +8,28 @@ use serde_json::Value;
 use std::path::PathBuf;
 use crate::{fs_tools, git, security::SecurityController};
 use soul_bridge::{SoulBridge, ToolCallRequest};
-use knowledge_graph::{Bm25Index, KnowledgeGraph};
-
-/// 处理 Python Soul 发来的工具调用请求，返回结果。
+use knowledge_graph::{Bm25Index, KnowledgeGraph};/// 处理 Python Soul 发来的工具调用请求，返回结果。
 /// `bridge` — Some(&SoulBridge) in TUI mode (enables approval modal), None in CLI/test.
 pub async fn dispatch(req: &ToolCallRequest, bridge: Option<&SoulBridge>, cfg: &crate::config::Config) -> Result<Value> {
     let cwd      = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let security = SecurityController::new(&cfg.security);
+
+    // Initialize tools crate security lists from the fully-parsed config.
+    // This ensures tools::run_command uses config-driven lists, not hardcoded arrays.
+    // Called on every dispatch (OnceLock ensures it only runs once per process).
+    {
+        use crate::config::{default_allowed_commands, default_blocked_patterns};
+        let mut allowed = cfg.security.allowed_commands.clone();
+        allowed.extend(cfg.security.extra_allowed_commands.iter().cloned());
+        let mut blocked = cfg.security.blocked_patterns.clone();
+        blocked.extend(cfg.security.extra_blocked_patterns.iter().cloned());
+        // init_security is idempotent (OnceLock — only first call takes effect)
+        tools::init_security(
+            if allowed.is_empty() { default_allowed_commands() } else { allowed },
+            if blocked.is_empty() { default_blocked_patterns() } else { blocked },
+        );
+    }
+
     let args = &req.args;
 
     match req.tool.as_str() {

@@ -299,43 +299,148 @@ pub struct SafetyConfig {
 /// 示例配置（~/.evocli/config.toml）:
 /// ```toml
 /// [security]
-/// allow_all_commands = true          # 跳过命令白名单检查（仍阻断危险模式）
-/// allow_all_paths = true             # 跳过路径访问限制
-/// block_dangerous_always = true      # 即使 allow_all 也阻断 rm -rf / 等危险操作
+/// allow_all_commands    = false   # 严格模式：只允许 allowed_commands 中的命令
+/// allow_all_paths       = false   # 严格模式：只允许访问非 denied_paths 路径
+/// block_dangerous_always = true   # 永远阻断高危操作（即使 allow_all=true）
+///
+/// # 完整命令白名单（覆盖内置默认值）
+/// allowed_commands = ["cargo", "git", "python", "npm", "ls", "cat", ...]
+///
+/// # 额外追加的允许命令（不影响 allowed_commands 内置列表）
 /// extra_allowed_commands = ["docker", "kubectl", "terraform"]
+///
+/// # 危险模式黑名单（覆盖内置默认值）
+/// blocked_patterns = ["rm -rf /", "mkfs", ":(){:|:&};:"]
+///
+/// # 额外追加的危险模式（不影响 blocked_patterns 内置列表）
 /// extra_blocked_patterns = ["curl * | bash", "wget * -O- | sh"]
+///
+/// # 路径访问黑名单（覆盖内置默认值）
+/// denied_paths = [".evocli/config.toml", ".ssh", ".gnupg", "/etc/passwd"]
+///
+/// # 额外追加的禁止路径
+/// extra_denied_paths = ["/prod", "/etc/nginx"]
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
-    /// 跳过命令白名单（允许任意命令）。默认 false。
-    /// 开启后仍受 block_dangerous_always 约束。
-    #[serde(default)]
+    /// 黑名单模式（default）：允许所有命令，仅阻断危险模式。
+    /// false = 严格白名单模式：只允许 allowed_commands + extra_allowed_commands。
+    #[serde(default = "default_true")]
     pub allow_all_commands: bool,
 
-    /// 跳过路径访问限制（允许访问任意路径）。默认 false。
+    /// 允许访问任意路径。false = 只允许访问非 denied_paths 路径。
     #[serde(default)]
     pub allow_all_paths: bool,
 
-    /// 即使 allow_all_commands=true，也永远阻断已知危险模式（rm -rf / 等）。
-    /// 强烈建议保持 true。默认 true。
+    /// 即使 allow_all_commands=true，也永远阻断已知危险模式。
+    /// 强烈建议保持 true。
     #[serde(default = "default_true")]
     pub block_dangerous_always: bool,
 
-    /// 追加到命令白名单的额外命令（不影响内置白名单）。
+    /// 命令白名单（严格模式下使用）。
+    /// 默认为内置安全命令列表。可以完全覆盖（替换而非追加）。
+    #[serde(default = "default_allowed_commands")]
+    pub allowed_commands: Vec<String>,
+
+    /// 额外追加到白名单的命令（叠加在 allowed_commands 之上）。
     /// 例如：["docker", "kubectl", "terraform", "ansible"]
     #[serde(default)]
     pub extra_allowed_commands: Vec<String>,
 
-    /// 追加到危险模式黑名单的额外模式（正则子串匹配）。
+    /// 危险模式黑名单（子串匹配）。
+    /// 默认为内置高危模式列表。可以完全覆盖。
+    #[serde(default = "default_blocked_patterns")]
+    pub blocked_patterns: Vec<String>,
+
+    /// 额外追加到危险模式黑名单的模式（正则或子串匹配）。
     #[serde(default)]
     pub extra_blocked_patterns: Vec<String>,
 
-    /// 追加到路径访问黑名单的路径前缀。
+    /// 路径访问黑名单。
+    /// 默认为内置保护路径。可以完全覆盖。
+    /// 注意：config.toml 本身始终受保护（代码兜底），不受此配置影响。
+    #[serde(default = "default_denied_paths")]
+    pub denied_paths: Vec<String>,
+
+    /// 额外追加到路径黑名单的路径前缀。
     #[serde(default)]
     pub extra_denied_paths: Vec<String>,
 }
 
 fn default_true() -> bool { true }
+
+/// 内置命令白名单默认值（等价于之前硬编码的 ALLOWED_PREFIXES）
+pub fn default_allowed_commands() -> Vec<String> {
+    vec![
+        // Build tools
+        "cargo","rustc","rustup","rust-analyzer",
+        "npm","npx","node","pnpm","yarn","bun","deno",
+        "python","python3","pip","uv",
+        "go","gofmt","gopls",
+        "make","cmake","ninja",
+        "mvn","gradle","java","javac",
+        "dotnet",
+        // EvoCLI itself
+        "evocli",
+        // Version control
+        "git",
+        // Navigation
+        "cd",
+        // Shell read-only
+        "cat","ls","dir","echo",
+        "head","tail","wc","grep","find","fd","rg",
+        "pwd","which","type",
+        "env","printenv",
+        "stat","file",
+        "diff","patch",
+        "sort","uniq","cut","awk","sed","xargs","tr",
+        "curl","wget",
+        "jq","yq",
+        "zip","unzip","tar","gzip","gunzip",
+        // Process inspection
+        "ps","top","htop",
+        // Create / move
+        "mkdir","touch","cp","mv",
+    ].into_iter().map(String::from).collect()
+}
+
+/// 内置危险模式黑名单默认值（等价于之前硬编码的 SHELL_BLOCKED_DANGEROUS）
+pub fn default_blocked_patterns() -> Vec<String> {
+    vec![
+        // 递归删除根目录
+        "rm -rf /","rm -rf /*","rm -rf ~","rm -rf ~/",
+        "rm -rf /etc","rm -rf /usr","rm -rf /bin","rm -rf /sbin",
+        "rm -rf /lib","rm -rf /var","rm -rf /home","rm -rf /root",
+        "rm -rf /boot","rm -rf /proc","rm -rf /sys",
+        // 权限核弹
+        "chmod -r 777 /","chmod 777 /",
+        // 原始磁盘写入
+        "> /dev/sda","> /dev/nvme","dd if=","dd of=/dev/",
+        // 格式化
+        "mkfs","wipefs","shred /dev/",
+        // Fork bomb
+        ":(){ :|:& };:",
+        // find -delete on root
+        "find / -delete","find /* -delete",
+        // Windows 核弹
+        "format c:","format d:",
+        "del /f /s /q c:\\","rd /s /q c:\\","rd /s /q d:\\",
+    ].into_iter().map(String::from).collect()
+}
+
+/// 内置路径黑名单默认值（等价于之前硬编码的 PATH_DENY_IMMUTABLE）
+pub fn default_denied_paths() -> Vec<String> {
+    vec![
+        ".evocli/config.toml",
+        ".evocli\\config.toml",
+        ".ssh",
+        ".gnupg",
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "\\Windows\\System32",
+    ].into_iter().map(String::from).collect()
+}
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -521,15 +626,14 @@ impl Default for ContextConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            // Blacklist mode by default: allow all commands, block only known-dangerous.
-            // Developer tools need to run many different commands; a whitelist requires
-            // constant maintenance and blocks legitimate operations (pwd, mkdir, sed, …).
-            // Users who want strict whitelist control can set allow_all_commands = false.
             allow_all_commands:     true,
             allow_all_paths:        false,
             block_dangerous_always: true,
+            allowed_commands:       default_allowed_commands(),
             extra_allowed_commands: vec![],
+            blocked_patterns:       default_blocked_patterns(),
             extra_blocked_patterns: vec![],
+            denied_paths:           default_denied_paths(),
             extra_denied_paths:     vec![],
         }
     }

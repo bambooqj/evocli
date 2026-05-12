@@ -207,10 +207,12 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
     let cost_str = if app.session_cost_usd < 0.001 { String::new() }
         else { format!("  ${:.3}", app.session_cost_usd) };
 
-    // Show "↑Xk ↓Xk" when we have accurate per-direction counts from cost_update
-    // Falls back to plain token bar when no cost_update received yet
-    let tok_detail = if app.tokens_input > 0 || app.tokens_output > 0 {
-        format!("↑{} ↓{}", fmt_tokens(app.tokens_input), fmt_tokens(app.tokens_output))
+    // Show "↑Xk ↓Xk" when we have accurate per-direction counts from cost_update.
+    // ↑ = current context window usage (input_tokens this turn, includes history+system)
+    // ↓ = this turn's generated output tokens
+    // Falls back to plain token bar when no cost_update received yet.
+    let tok_detail = if app.current_ctx_tokens > 0 || app.last_out_tokens > 0 {
+        format!("↑{} ↓{}", fmt_tokens(app.current_ctx_tokens), fmt_tokens(app.last_out_tokens))
     } else {
         String::new()
     };
@@ -220,7 +222,7 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
             let model_max = if mode == LayoutMode::Wide { 20 } else { 14 };
             let model: String = app.model_name.chars().take(model_max).collect();
             let bar_w = if mode == LayoutMode::Wide { 10 } else { 8 };
-            let (tok_bar, tok_color) = token_bar(app.tokens_used, app.max_context_tokens, bar_w);
+            let (tok_bar, tok_color) = token_bar(app.current_ctx_tokens, app.max_context_tokens, bar_w);
 
             // Dynamic path budget: use all remaining space after fixed elements.
             //  " ◆ "(3) + "EvoCLI"(6) + "  "(2) + model + "  ⌂ "(4)
@@ -260,7 +262,7 @@ fn draw_title_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
         }
         LayoutMode::Compact => {
             let m: String = app.model_name.chars().take(10).collect();
-            let (tok_bar, tok_color) = token_bar(app.tokens_used, app.max_context_tokens, 6);
+            let (tok_bar, tok_color) = token_bar(app.current_ctx_tokens, app.max_context_tokens, 6);
             let mut spans = vec![
                 Span::styled(" ◆ ", Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD)),
                 Span::styled("EVO", Style::default().fg(USER_ACCENT).add_modifier(Modifier::BOLD)),

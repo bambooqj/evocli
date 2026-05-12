@@ -580,18 +580,23 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
     match event_type {
         // FIX-E: litellm 计算的精确成本（via Python Soul cost_update event）
         "cost_update" => {
-            let cost     = event["cost_usd"].as_f64().unwrap_or(0.0);
-            let in_tok   = event["input_tokens"].as_u64().unwrap_or(0) as usize;
-            let out_tok  = event["output_tokens"].as_u64().unwrap_or(0) as usize;
+            let cost    = event["cost_usd"].as_f64().unwrap_or(0.0);
+            let in_tok  = event["input_tokens"].as_u64().unwrap_or(0) as usize;
+            let out_tok = event["output_tokens"].as_u64().unwrap_or(0) as usize;
+
+            // Session-level accumulators (for /cost command: total $ spent, total tokens processed)
             app.session_cost_usd += cost;
             app.tokens_input     += in_tok;
             app.tokens_output    += out_tok;
-            // Update the progress bar value: total = input + output
-            app.tokens_used = app.tokens_input + app.tokens_output;
+            app.tokens_used       = app.tokens_input + app.tokens_output;
+
+            // Current-turn values: SET (not accumulated) so the token bar
+            // shows "how full is the context window RIGHT NOW?" not a growing sum.
+            // in_tok = full prompt sent this turn (system + history + user) = current context size.
+            app.current_ctx_tokens = in_tok;
+            app.last_out_tokens    = out_tok;
 
             // Update the LAST assistant message's token display with real output count.
-            // Previously: it showed tokens_received (streaming chunk count, not token count).
-            // Now: it shows the real output token count from litellm usage data.
             if out_tok > 0 {
                 for msg in app.messages.iter_mut().rev() {
                     if let ChatMessage::Assistant { tokens, .. } = msg {

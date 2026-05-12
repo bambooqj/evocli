@@ -38,95 +38,119 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
-// ── Allowlist / blocklist ────────────────────────────────────────
+// ── Config-driven security lists ─────────────────────────────────
+//
+// All whitelist/blacklist values come from config.toml [security].
+// No hardcoded lists — the defaults live in config.rs::default_allowed_commands()
+// and default_blocked_patterns() and are written to config.toml on first init.
+//
+// tools::init_security() is called once at startup by the host crate
+// after loading the full SecurityConfig.
 
-/// Commands whose first token must match one of these prefixes.
-const ALLOWED_PREFIXES: &[&str] = &[
-    // Build tools
-    "cargo", "rustc", "rustup", "rust-analyzer",
-    "npm", "npx", "node", "pnpm", "yarn", "bun", "deno",
-    "python", "python3", "pip", "uv",
-    "go", "gofmt", "gopls",
-    "make", "cmake", "ninja",
-    "mvn", "gradle", "java", "javac",
-    "dotnet",
-    // EvoCLI itself — agent may call `evocli doctor`, `evocli stats`, etc.
-    "evocli",
-    // Version control
-    "git",
-    // Shell navigation & directory operations
-    // Note: `cd` in shell.run only changes directory within THAT subprocess.
-    // It does NOT affect subsequent shell.run calls (each runs in fresh subprocess).
-    // Allowing it enables common patterns like: cd src && cargo build
-    "cd",
-    // Shell read-only / navigation (safe: no destructive side effects)
-    "cat", "ls", "dir", "echo",
-    "head", "tail", "wc", "grep", "find", "fd", "rg",
-    "pwd",           // print working directory
-    "which", "type", // find executable location
-    "env", "printenv",// environment inspection
-    "stat", "file",  // file metadata (read-only)
-    "diff", "patch", // diff viewing
-    "sort", "uniq", "cut", "awk", "sed", "xargs", "tr",
-    "curl", "wget",  // network (non-destructive by default)
-    "jq", "yq",      // JSON/YAML processing
-    "zip", "unzip", "tar", "gzip", "gunzip",
-    // Process inspection (read-only)
-    "ps", "top", "htop",
-    // Create / move (allowed with security blacklist protecting critical paths)
-    "mkdir",         // create directories (safe — security blocks system dirs)
-    "touch",         // create empty files (safe)
-    "cp", "mv",      // copy/move (safe — security blacklist blocks /etc etc.)
-    // NOTE: rm is intentionally NOT here. It is destructive and hard to reason
-    // about safely. Use 'git checkout -- <file>' or trash-cli instead.
-];
+static ALLOWED: OnceLock<Vec<String>>  = OnceLock::new();
+static BLOCKED: OnceLock<Vec<String>>  = OnceLock::new();
 
-/// Patterns that are always rejected regardless of the command prefix.
-const DANGEROUS_PATTERNS: &[&str] = &[
-    "rm -rf /",
-    "rm -rf /*",
-    "chmod 777 /",
-    "> /dev/",
-    "mkfs",
-    ":(){:|:&};:",
-    "dd if=/dev/",
-    "wget http",
-    "curl http",
-];
+/// Initialize security lists from config.
+/// Called once at startup by the host crate (main.rs or tool_dispatch.rs).
+/// If not called, falls back to reading from config.toml directly (legacy path).
+pub fn init_security(allowed: Vec<String>, blocked: Vec<String>) {
+    let _ = ALLOWED.set(allowed);
+    let _ = BLOCKED.set(blocked);
+}
 
-// ── User-configurable extra allowed commands ─────────────────────
-// Loaded once from ~/.evocli/config.toml [shell] extra_commands = ["java", "mvn"]
-static EXTRA_ALLOWED: OnceLock<Vec<String>> = OnceLock::new();
+fn get_allowed() -> &'static [String] {
+    ALLOWED.get_or_init(|| load_from_config_file()).as_slice()
+}
 
-fn load_extra_allowed() -> &'static [String] {
-    EXTRA_ALLOWED.get_or_init(|| {
-        let cfg = dirs::home_dir()
-            .map(|h| h.join(".evocli").join("config.toml"))
-            .filter(|p| p.exists());
-        let Some(path) = cfg else { return vec![] };
-        let Ok(content) = std::fs::read_to_string(&path) else { return vec![] };
-        // Minimal TOML parse: look for [shell] section then extra_commands = [...]
-        let mut in_shell = false;
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed == "[shell]" { in_shell = true; continue; }
-            if trimmed.starts_with('[') { in_shell = false; continue; }
-            if in_shell && trimmed.starts_with("extra_commands") {
-                // Parse: extra_commands = ["java", "mvn", "gradle"]
-                if let Some(start) = trimmed.find('[') {
-                    let inner = &trimmed[start + 1..];
-                    if let Some(end) = inner.find(']') {
-                        return inner[..end]
-                            .split(',')
-                            .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                }
+fn get_blocked() -> &'static [String] {
+    BLOCKED.get_or_init(|| load_blocked_from_config_file()).as_slice()
+}
+
+/// Legacy fallback: read allowed_commands from config.toml.
+/// Used when init_security() was not called (e.g. tests, tools used standalone).
+fn load_from_config_file() -> Vec<String> {
+    let cfg = dirs::home_dir()
+        .map(|h| h.join(".evocli").join("config.toml"))
+        .filter(|p| p.exists());
+    let Some(path) = cfg else {
+        return default_allowed_fallback();
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return default_allowed_fallback();
+    };
+    // Parse [security] allowed_commands = [...]
+    parse_string_array_from_toml(&content, "security", "allowed_commands")
+        .unwrap_or_else(default_allowed_fallback)
+}
+
+fn load_blocked_from_config_file() -> Vec<String> {
+    let cfg = dirs::home_dir()
+        .map(|h| h.join(".evocli").join("config.toml"))
+        .filter(|p| p.exists());
+    let Some(path) = cfg else { return default_blocked_fallback(); };
+    let Ok(content) = std::fs::read_to_string(&path) else { return default_blocked_fallback(); };
+    parse_string_array_from_toml(&content, "security", "blocked_patterns")
+        .unwrap_or_else(default_blocked_fallback)
+}
+
+/// Hardcoded fallback defaults (same as config.rs::default_allowed_commands).
+/// Only used when config file is missing/unreadable AND init_security was not called.
+fn default_allowed_fallback() -> Vec<String> {
+    vec![
+        "cargo","rustc","rustup","rust-analyzer",
+        "npm","npx","node","pnpm","yarn","bun","deno",
+        "python","python3","pip","uv",
+        "go","gofmt","gopls","make","cmake","ninja",
+        "mvn","gradle","java","javac","dotnet",
+        "evocli","git","cd",
+        "cat","ls","dir","echo","head","tail","wc","grep","find","fd","rg",
+        "pwd","which","type","env","printenv","stat","file","diff","patch",
+        "sort","uniq","cut","awk","sed","xargs","tr","curl","wget",
+        "jq","yq","zip","unzip","tar","gzip","gunzip",
+        "ps","top","htop","mkdir","touch","cp","mv",
+    ].into_iter().map(String::from).collect()
+}
+
+fn default_blocked_fallback() -> Vec<String> {
+    vec![
+        "rm -rf /","rm -rf /*","rm -rf ~","rm -rf ~/",
+        "rm -rf /etc","rm -rf /usr","rm -rf /bin","rm -rf /var",
+        "rm -rf /home","rm -rf /root","rm -rf /boot",
+        "chmod -r 777 /","chmod 777 /",
+        "> /dev/sda","dd if=","dd of=/dev/","mkfs","wipefs",
+        ":(){ :|:& };:","find / -delete",
+        "format c:","format d:","rd /s /q c:\\",
+    ].into_iter().map(String::from).collect()
+}
+
+/// Minimal TOML array parser (tools crate cannot depend on serde/toml).
+fn parse_string_array_from_toml(content: &str, section: &str, key: &str) -> Option<Vec<String>> {
+    let section_header = format!("[{section}]");
+    let mut in_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == section_header { in_section = true; continue; }
+        if trimmed.starts_with('[') { in_section = false; continue; }
+        if in_section && trimmed.starts_with(key) {
+            if let Some(start) = trimmed.find('[') {
+                // Handle multi-line arrays (find closing ])
+                let rest = &trimmed[start + 1..];
+                let inner = if let Some(end) = rest.find(']') {
+                    rest[..end].to_string()
+                } else {
+                    // Simple single-line only
+                    rest.to_string()
+                };
+                let result: Vec<String> = inner
+                    .split(',')
+                    .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !result.is_empty() { return Some(result); }
             }
         }
-        vec![]
-    })
+    }
+    None
 }
 
 // ── Core API ─────────────────────────────────────────────────────
@@ -148,15 +172,15 @@ pub fn run_command(
         bail!("Empty command");
     }
 
-    // ── Safety: dangerous pattern check ──
+    // ── Safety: dangerous pattern check (config-driven) ──
     let cmd_lower = cmd_trimmed.to_lowercase();
-    for pattern in DANGEROUS_PATTERNS {
-        if cmd_lower.contains(pattern) {
+    for pattern in get_blocked() {
+        if cmd_lower.contains(pattern.to_lowercase().as_str()) {
             bail!("Blocked: command matches dangerous pattern '{pattern}'");
         }
     }
 
-    // ── Safety: allowlist check ──
+    // ── Safety: allowlist check (config-driven) ──
     let first_token = cmd_trimmed.split_whitespace().next().unwrap_or("");
     // Strip path prefix to get the binary name
     let binary_name = Path::new(first_token)
@@ -164,22 +188,17 @@ pub fn run_command(
         .and_then(|n| n.to_str())
         .unwrap_or(first_token);
 
-    let extra = load_extra_allowed();
-    let allowed = ALLOWED_PREFIXES.iter().any(|prefix| {
-        binary_name == *prefix || binary_name.starts_with(&format!("{prefix}.")) // e.g. python3.11
-    }) || extra.iter().any(|prefix| {
-        binary_name == prefix.as_str() || binary_name.starts_with(&format!("{prefix}."))
+    let allowed_list = get_allowed();
+    let allowed = allowed_list.iter().any(|prefix| {
+        binary_name == prefix.as_str()
+            || binary_name.starts_with(&format!("{prefix}."))  // e.g. python3.11
     });
     if !allowed {
-        let extra_list = if extra.is_empty() {
-            String::new()
-        } else {
-            format!(", {}", extra.join(", "))
-        };
         bail!(
             "Blocked: '{binary_name}' is not in the allowed command list. \
-             Allowed: {}{extra_list}",
-            ALLOWED_PREFIXES.join(", ")
+             Allowed: {}\n\
+             Add to ~/.evocli/config.toml [security] extra_allowed_commands = [\"{binary_name}\"]",
+            allowed_list.join(", ")
         );
     }
 
@@ -253,8 +272,8 @@ pub fn is_allowed(cmd: &str) -> bool {
         return false;
     }
     let cmd_lower = cmd_trimmed.to_lowercase();
-    for pattern in DANGEROUS_PATTERNS {
-        if cmd_lower.contains(pattern) {
+    for pattern in get_blocked() {
+        if cmd_lower.contains(pattern.to_lowercase().as_str()) {
             return false;
         }
     }
@@ -264,8 +283,8 @@ pub fn is_allowed(cmd: &str) -> bool {
         .and_then(|n| n.to_str())
         .unwrap_or(first_token);
 
-    ALLOWED_PREFIXES.iter().any(|prefix| {
-        binary_name == *prefix || binary_name.starts_with(&format!("{prefix}."))
+    get_allowed().iter().any(|prefix| {
+        binary_name == prefix.as_str() || binary_name.starts_with(&format!("{prefix}."))
     })
 }
 
@@ -423,13 +442,13 @@ pub fn classify_command(cmd: &str) -> CommandRoute {
 
     // 危险模式检查
     let cmd_lower = cmd.to_lowercase();
-    for pattern in DANGEROUS_PATTERNS {
-        if cmd_lower.contains(pattern) { return CommandRoute::Blocked; }
+    for pattern in get_blocked() {
+        if cmd_lower.contains(pattern.to_lowercase().as_str()) { return CommandRoute::Blocked; }
     }
 
     if UUTILS_BUILTINS.contains(&binary) {
         CommandRoute::BuiltinUutils
-    } else if ALLOWED_PREFIXES.iter().any(|p| binary == *p) {
+    } else if get_allowed().iter().any(|p| binary == p.as_str()) {
         CommandRoute::NativeProcess
     } else {
         CommandRoute::Blocked
