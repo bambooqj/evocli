@@ -477,15 +477,9 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
                     "status": "loading",
                     "message": "⟳ 检测到规划但未执行，正在自动继续执行…",
                 })
-                # Inject auto-continue message into history and re-trigger
-                _st.append_history([
-                    {"role": "user",      "content": prompt},
-                    {"role": "assistant", "content": assistant_reply},
-                    {"role": "user",      "content": "好的，请现在立即执行上述分析/操作。"},
-                ], session_id)
-                # Re-submit via agent.run (non-streaming, has tool-calling loop)
-                # NOTE: agent.run() doesn't take prior_history directly; history is already
-                # stored in state via append_history above, and _build_context will load it.
+                # Re-submit via agent.run (non-streaming, has tool-calling loop).
+                # agent.run() loads history from state itself; do NOT pre-write here
+                # to avoid duplicating the current turn before followup_agent persists it.
                 try:
                     followup_agent = EvoCLIAgent(state.get_bridge(), memory, cfg, session_id=session_id)
                     followup_result = await followup_agent.run(
@@ -575,13 +569,13 @@ async def _maybe_compress_history(session_id: str) -> None:
         llm = _st.get_llm_client()
         new_summary = await compact_session_to_anchor(head, llm, existing_summary)
         _st.set_anchored_summary(new_summary, session_id)
-        # Replace history: 2-message summary anchor + verbatim tail
-        summary_msgs = [
-            {"role": "user",      "content": f"[Session Summary — previous context]\n{new_summary}"},
-            {"role": "assistant", "content": "Understood. I have context from our previous work."},
-        ]
+        # Replace history: keep only the verbatim tail.
+        # The anchored summary lives in _anchored_summaries and is injected by
+        # context_engine unconditionally — do NOT also write it back as history
+        # messages, which would cause double-injection (summary in history AND
+        # in anchored_summary slot).
         _st.clear_history(session_id)
-        _st.append_history(summary_msgs + tail, session_id)
+        _st.append_history(tail, session_id)
         log.info("History compressed: %d msgs → anchor + %d tail (session=%s)",
                  len(head), _HISTORY_TAIL_MESSAGES, session_id)
     except Exception as e:
