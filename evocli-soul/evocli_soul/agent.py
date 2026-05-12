@@ -1679,6 +1679,10 @@ class EvoCLIAgent:
         import asyncio
         # Read timeout from config [agent] section (default 20s)
         _ctx_timeout = float((self.config or {}).get("agent", {}).get("context_build_timeout_s", 20))
+        # History strategy: embed prior_history in user_context via _build_context.
+        # This makes it available to ALL downstream paths (pydantic-ai and LiteLLM)
+        # as part of the user message. We do NOT also pass message_history to
+        # pydantic-ai or extend messages arrays — history appears exactly once.
         try:
             ctx = await asyncio.wait_for(
                 self._build_context(user_input, context_params,
@@ -1692,26 +1696,12 @@ class EvoCLIAgent:
 
         if self._agent is not None:
             try:
-                # pydantic-ai multi-turn: inject prior conversation history.
-                # pydantic-ai >= 0.0.30 accepts message_history as list[ModelMessage].
-                # Our prior_history is list[dict] with {role, content} — we attempt
-                # to pass it directly (pydantic-ai is lenient with dict messages in
-                # recent versions). On TypeError/ValidationError we fall back gracefully
-                # to the single-turn path (LLM sees context in system prompt instead).
-                run_kwargs: dict = {}
-                if prior_history:
-                    try:
-                        # Verify pydantic_ai actually accepts message_history
-                        import inspect as _inspect
-                        import importlib.util as _iu
-                        if _iu.find_spec("pydantic_ai"):
-                            sig = _inspect.signature(self._agent.run_stream)
-                            if "message_history" in sig.parameters:
-                                run_kwargs["message_history"] = prior_history
-                    except Exception:
-                        pass  # API introspection failed — skip history injection
-
-                async with self._agent.run_stream(full_input, **run_kwargs) as result:
+                # History is embedded in full_input via _inject_context (user_context).
+                # We do NOT pass message_history to pydantic-ai because our prior_history
+                # is plain {role, content} dicts — pydantic-ai expects typed ModelMessage
+                # objects. Passing dicts risks silent double-injection if pydantic-ai
+                # happens to accept them. Full context is already in full_input.
+                async with self._agent.run_stream(full_input) as result:
                     async for chunk in result.stream_text(delta=True):
                         yield chunk
                 return
