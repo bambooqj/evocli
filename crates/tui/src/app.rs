@@ -164,6 +164,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/?",              "Show available commands (alias)"),
     ("/compress",       "Compress session history to free context space"),
     ("/compact",        "Compress session history to free context space (alias)"),
+    ("/flows",          "List automatically learned tool flows"),
     ("/add <file>",     "Pin a file to context for all turns"),
     ("/add list",       "Show all pinned files"),
     ("/add clear",      "Remove all pinned files from context"),

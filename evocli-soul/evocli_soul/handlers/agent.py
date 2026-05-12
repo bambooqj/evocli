@@ -291,6 +291,34 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             return
         return
 
+    # ── /flows — 列出/管理学习到的工具流 ────────────────────────────────────
+    if prompt.strip().lower() in ("/flows", "/flow"):
+        try:
+            from evocli_soul.tool_flow_miner import list_flows
+            flows = list_flows()
+            if not flows:
+                await send.stream_chunk(req_id,
+                    "📭 还没有学到工具流。\n\n"
+                    "工具流会在你重复使用相同工具序列（≥2次）后自动学习。\n"
+                    "继续使用 EvoCLI，系统会自动发现你的工作模式。",
+                    done=True)
+                return
+            lines = ["## 已学习的工具流\n"]
+            for f in flows:
+                steps_str = " → ".join(f["step_tools"][:5])
+                if len(f["step_tools"]) > 5:
+                    steps_str += f" (+{len(f['step_tools'])-5})"
+                lines.append(
+                    f"**{f['name']}**\n"
+                    f"  步骤: {steps_str}\n"
+                    f"  置信度: {f['confidence']:.0%}  成功率: {f['success_rate']:.0%}\n"
+                )
+            lines.append("\n💡 触发：在对话中描述相关任务，系统会自动建议或执行匹配的工具流。")
+            await send.stream_chunk(req_id, "\n".join(lines), done=True)
+        except Exception as e:
+            await send.stream_chunk(req_id, f"获取工具流失败: {e}", done=True)
+        return
+
     # Track whether we actually sent any content chunks so we can detect silent failures.
     chunks_sent = 0
 
@@ -359,6 +387,64 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             "status":  "loading",
             "message": "⚙ Building context & calling LLM…",
         })
+
+        # ── ToolFlow 触发检查（在 LLM 调用前）────────────────────────────────
+        # 检查用户意图是否匹配已学习的工具流
+        # 高置信度(≥0.70)→ 询问是否执行；中置信度(0.45-0.70)→ 告知有工具流可用
+        try:
+            from evocli_soul.tool_flow_miner import (
+                check_flow_trigger, FlowExecutor,
+                AUTO_EXECUTE_THRESH, SUGGEST_THRESH,
+            )
+            _matched_flow, _flow_score = check_flow_trigger(prompt)
+            if _matched_flow and _flow_score >= AUTO_EXECUTE_THRESH:
+                # 高置信度：直接建议执行工具流，以 system 消息通知用户
+                _flow_hint = (
+                    f"🔄 **检测到匹配的工具流**: {_matched_flow.name}\n"
+                    f"步骤: {' → '.join(s.tool for s in _matched_flow.steps[:5])}\n"
+                    f"置信度: {_flow_score:.0%}  历史成功率: {_matched_flow.success_rate:.0%}\n\n"
+                    f"正在自动执行...\n\n"
+                )
+                await send.stream_chunk(req_id, _flow_hint, done=False)
+                # 执行工具流
+                _executor = FlowExecutor(state.get_bridge(), cfg)
+                _flow_ctx = {"current_file": params.get("current_file", "")}
+
+                async def _progress_cb(step_n, total, desc, result):
+                    await send.stream_chunk(req_id,
+                        f"{'✓' if result else '⏳'} [{step_n}/{total}] {desc}\n",
+                        done=False)
+
+                _flow_result = await _executor.execute(
+                    _matched_flow, prompt,
+                    context=_flow_ctx,
+                    progress_callback=_progress_cb,
+                )
+                if _flow_result.get("ok"):
+                    _final = _flow_result.get("final_output", "")
+                    await send.stream_chunk(req_id,
+                        f"\n✅ 工具流执行完成\n{_final[:500] if _final else ''}",
+                        done=True)
+                    # 持久化本轮历史
+                    _st.append_history([
+                        {"role": "user",      "content": prompt},
+                        {"role": "assistant", "content": f"[工具流: {_matched_flow.name}]\n{_final[:1000]}"},
+                    ], session_id)
+                    return
+                else:
+                    # 工具流失败 → 降级到正常 agent 流程
+                    await send.stream_chunk(req_id,
+                        f"⚠️ 工具流执行失败（步骤{_flow_result.get('failed_step')}），使用 AI 继续...\n\n",
+                        done=False)
+            elif _matched_flow and _flow_score >= SUGGEST_THRESH:
+                # 中置信度：在响应开头提示有工具流可用（不打断流程）
+                _hint = (
+                    f"💡 *发现相关工具流: {_matched_flow.name}*  "
+                    f"(置信度 {_flow_score:.0%}，输入 `/flows` 查看)\n\n"
+                )
+                await send.stream_chunk(req_id, _hint, done=False)
+        except Exception as _tf_err:
+            log.debug("ToolFlow trigger check failed (non-fatal): %s", _tf_err)
 
         # ── Primary path (pydantic-ai → LiteLLM fallback) ────────────────────
         collected_chunks: list[str] = []   # accumulate for history
@@ -598,13 +684,23 @@ async def _distill_session() -> None:
             return  # Not enough signal to extract meaningful patterns
 
         # ── ToolRouter: 更新工具使用分数（记忆驱动优化）────────────────────
-        # 论文来源：MemoryDistill + ToolLLM 工具历史学习
         try:
             from evocli_soul.tool_router import update_scores_from_session_events
             update_scores_from_session_events(events)
             log.debug("ToolRouter: scores updated from %d session events", len(events))
         except Exception as _tr_err:
             log.debug("ToolRouter score update failed (non-fatal): %s", _tr_err)
+
+        # ── ToolFlowMiner: 挖掘重复工具流（越用越聪明飞轮）────────────────
+        # 从带参数的富事件中发现重复的工具调用序列，抽象为可复现的 ToolFlow
+        try:
+            from evocli_soul.tool_flow_miner import mine_from_events
+            new_flows = mine_from_events(events, project_local=True)
+            if new_flows:
+                log.info("ToolFlowMiner: %d new tool flows discovered this session",
+                         len(new_flows))
+        except Exception as _fm_err:
+            log.debug("ToolFlowMiner failed (non-fatal): %s", _fm_err)
 
         from evocli_soul.memory_distill import MemoryDistiller
         bridge = _st.get_bridge()

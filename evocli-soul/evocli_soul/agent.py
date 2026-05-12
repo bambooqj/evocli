@@ -999,10 +999,14 @@ class EvoCLIAgent:
         _ev_type = _DISTILL_EVENT_MAP.get(name, "tool_called")
         try:
             import evocli_soul.state as _st
+            # ToolFlowMiner: 记录带参数的富事件（用于工具流挖掘）
+            # 之前只记录工具名；现在加上 params，使 FlowMiner 能重建序列
             _st.append_session_event({
-                "type":   _ev_type,
-                "method": name,
-                "data":   {"tool": name},
+                "type":   "tool_called",
+                "method": _TOOL_TO_RPC.get(name, (name, None))[0] if name in _TOOL_TO_RPC else name,
+                "tool":   name,
+                "params": {k: v for k, v in args.items() if k not in ("content", "diff", "edits_json")},  # 不存大内容
+                "session_id": self._session_id,
             })
         except Exception:
             pass  # Never let event recording break tool execution
@@ -1423,7 +1427,7 @@ class EvoCLIAgent:
                 import evocli_soul.state as _st3
                 if rpc_method == "git.commit":
                     # Successful git commit = success chain anchor
-                    _st3.append_session_event({"type": "git_commit", "method": name})
+                    _st3.append_session_event({"type": "git_commit", "method": name, "session_id": self._session_id})
                 elif name == "test_and_capture":
                     # shell.run used for test — check exit code in result
                     exit_code = result.get("exit_code", 0) if isinstance(result, dict) else 0
@@ -1431,7 +1435,22 @@ class EvoCLIAgent:
                     _st3.append_session_event({
                         "type": ev_type, "method": name,
                         "error": result.get("stderr", "")[:200] if isinstance(result, dict) and exit_code != 0 else "",
+                        "session_id": self._session_id,
                     })
+                # ToolFlowMiner: 记录 tool_done（带结果摘要）
+                result_summary = ""
+                if isinstance(result, str):
+                    result_summary = result[:80]
+                elif isinstance(result, dict):
+                    result_summary = str(result.get("ok", result.get("content", "")))[:80]
+                _st3.append_session_event({
+                    "type":    "tool_done",
+                    "method":  rpc_method,
+                    "tool":    name,
+                    "ok":      True,
+                    "result":  result_summary,
+                    "session_id": self._session_id,
+                })
             except Exception:
                 pass
 
