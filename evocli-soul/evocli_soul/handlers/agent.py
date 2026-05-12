@@ -441,11 +441,12 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
                     {"role": "user",      "content": "好的，请现在立即执行上述分析/操作。"},
                 ], session_id)
                 # Re-submit via agent.run (non-streaming, has tool-calling loop)
+                # NOTE: agent.run() doesn't take prior_history directly; history is already
+                # stored in state via append_history above, and _build_context will load it.
                 try:
                     followup_agent = EvoCLIAgent(state.get_bridge(), memory, cfg, session_id=session_id)
                     followup_result = await followup_agent.run(
                         "请现在立即执行你刚才描述的操作。",
-                        prior_history=_st.get_history(session_id),
                     )
                     # Stream the result to TUI
                     if followup_result and followup_result.strip():

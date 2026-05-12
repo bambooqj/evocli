@@ -127,10 +127,16 @@ def append_history(messages: list[dict], session_id: str = "default") -> None:
 
 
 def clear_history(session_id: str = "default") -> None:
-    """Clear history for a session (called on /compress or new session)."""
+    """Clear raw message history for a session while PRESERVING the anchored summary.
+
+    The anchored summary is the whole point of /compress — it must survive the clear.
+    Only the raw message list is cleared; the summary acts as the new compact "memory"
+    of what happened before.
+    """
     _conversation_histories.pop(session_id, None)
     _context_caches.pop(session_id, None)
-    _anchored_summaries.pop(session_id, None)
+    # _anchored_summaries intentionally NOT cleared — survives /compress
+    # The summary IS the session context after compression.
     _files_read.pop(session_id, None)
     _current_turns.pop(session_id, None)
     # Note: _added_files intentionally NOT cleared — user's /add persists across /compress

@@ -463,6 +463,9 @@ class EvoCLIAgent:
                 if path:
                     search_params["file"] = path
                 symbols = await bridge.call("symbol.lookup", search_params)
+                # Normalize: Rust may return list OR {"found":bool, "symbols":[...]}
+                if isinstance(symbols, dict):
+                    symbols = symbols.get("symbols", []) or []
                 if not isinstance(symbols, list) or not symbols:
                     # Fallback: text search
                     grep_result = await bridge.call("shell.grep", {
@@ -1134,17 +1137,17 @@ class EvoCLIAgent:
                     failed = True
 
             if failed:
-                # Phase 3a: Rollback — restore originals from memory (Option C)
-                for path, original_content in originals.items():
-                    try:
-                        await self.bridge.call("fs.write", {"path": path, "content": original_content})
-                    except Exception as re:
-                        log.warning("fs_apply_batch rollback failed for %s: %s", path, re)
                 # Strip internal _new_content before returning
                 clean_results = [{k: v for k, v in r.items() if k != "_new_content"} for r in results]
                 if skip_failed:
-                    # skip_failed=True: keep successful edits, only report failures
-                    # Aider pattern: fix failures individually, don't restart everything
+                    # skip_failed=True: DON'T rollback successful edits.
+                    # Write the successful ones, skip the failures, report both.
+                    for r in results:
+                        if r.get("ok") and r.get("_new_content") is not None:
+                            try:
+                                await self.bridge.call("fs.write", {"path": r["path"], "content": r["_new_content"]})
+                            except Exception as _we:
+                                log.warning("fs_apply_batch skip_failed write error %s: %s", r["path"], _we)
                     log.info("fs_apply_batch(skip_failed=True): %d ok, %d failed — keeping successes",
                              sum(1 for r in results if r.get("ok")),
                              sum(1 for r in results if not r.get("ok")))
@@ -1153,10 +1156,16 @@ class EvoCLIAgent:
                         "ok": False, "rolled_back": False, "partial": True,
                         "applied": sum(1 for r in results if r.get("ok")),
                         "failed":  sum(1 for r in results if not r.get("ok")),
-                        "error": "Some edits failed (skip_failed=True: successes kept). Fix the failed ones individually.",
+                        "error": "Some edits failed (skip_failed=True: successes written). Fix the failed ones individually.",
                         "results": clean_results,
                     }, ensure_ascii=False)
                 else:
+                    # skip_failed=False (atomic): rollback ALL
+                    for path, original_content in originals.items():
+                        try:
+                            await self.bridge.call("fs.write", {"path": path, "content": original_content})
+                        except Exception as re:
+                            log.warning("fs_apply_batch rollback failed for %s: %s", path, re)
                     # skip_failed=False (default, atomic): roll back everything
                     await emit_event("tool_call_done", {"tool": "fs.apply_batch", "ok": False})
                     return _json.dumps({
@@ -1401,6 +1410,13 @@ class EvoCLIAgent:
             except Exception:
                 enriched_goal = user_input
 
+            # Load anchored summary (preserved across /compress — this is the compact session memory)
+            try:
+                import evocli_soul.state as _st_anchor
+                anchored_summary = _st_anchor.get_anchored_summary(session_id)
+            except Exception:
+                anchored_summary = ""
+
             return await ctx_engine.build({
                 "goal":             enriched_goal,
                 "project_id":       (context_params or {}).get("project_id", "."),
@@ -1409,6 +1425,7 @@ class EvoCLIAgent:
                 "history":          history or [],
                 "active_tools":     list(self._TOOL_TO_RPC.keys()),
                 "session_id":       session_id,
+                "anchored_summary": anchored_summary,  # injected after /compress
             })
         except Exception as e:
             log.debug("Context build failed: %s", e)
@@ -1882,11 +1899,16 @@ class EvoCLIAgent:
         messages.append({"role": "user", "content": user_input})
         # Read stream timeout from config [agent] section (default 30s)
         _stream_timeout = float((self.config or {}).get("agent", {}).get("stream_timeout_s", 30))
+        # Build tool definitions so the streaming path can also call tools.
+        # Without this, the LiteLLM streaming fallback generates text-only responses
+        # and cannot execute any tools, making "CALL THE TOOL NOW" a false promise.
+        _tools = self._build_tool_definitions()
         try:
             response = await asyncio.wait_for(
                 llm._router.acompletion(
                     model=tier,
                     messages=messages,   # [system] + [history] + [user]
+                    tools=_tools,        # enable tool calling in streaming path
                     stream=True, max_tokens=2048,
                 ),
                 timeout=_stream_timeout,
@@ -1896,9 +1918,39 @@ class EvoCLIAgent:
             yield f"\n\n⚠️ LLM API timed out ({_stream_timeout:.0f}s). Check your API key and network, then try again."
             return
         async for chunk in response:
-            text = (chunk.choices[0].delta.content or "") if chunk.choices else ""
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            text = delta.content or ""
             if text:
                 yield text
+
+            # Handle streaming tool calls — collect tool_call deltas and execute them.
+            # Without this, the streaming path silently ignores tool requests, making
+            # "CALL THE TOOL NOW" a false promise.
+            if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    if not hasattr(tc_delta, 'function') or not tc_delta.function:
+                        continue
+                    tool_name  = getattr(tc_delta.function, 'name',      "") or ""
+                    tool_args  = getattr(tc_delta.function, 'arguments', "") or ""
+                    tool_id    = getattr(tc_delta, 'id', "") or ""
+                    if not tool_name:
+                        continue
+                    try:
+                        import json as _stj
+                        targs = _stj.loads(tool_args) if tool_args.strip() else {}
+                    except Exception:
+                        targs = {}
+                    # Notify TUI about tool execution
+                    try:
+                        from evocli_soul.rpc import emit_event as _se
+                        await _se("tool_call_start", {"tool": tool_name, "display": f"⟳ {tool_name}"})
+                    except Exception:
+                        pass
+                    tool_result = await self._execute_tool(tool_name, targs)
+                    # Yield a formatted tool result to the stream so user sees it
+                    yield f"\n\n**`{tool_name}`** → {str(tool_result)[:500]}\n"
 
         # After streaming completes, emit cost_update with real token counts.
         # litellm includes usage in the last streaming chunk when stream_options
