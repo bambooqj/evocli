@@ -104,7 +104,7 @@ jobs:
       - name: Install Rust 1.85
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       # ── Cargo + target 缓存 ─────────────────────────────────────────────────
