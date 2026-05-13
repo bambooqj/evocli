@@ -112,6 +112,8 @@ async def handle_code_intel_reindex(req_id: str, params: dict, send, state) -> N
         from evocli_soul.tree_sitter_analyzer import analyze_file
         results = []
         bridge  = state.get_bridge()
+        # Keep analyzed symbols for LanceDB semantic embedding (used by _ingest_chunks_bg below)
+        _analyzed_symbols: list[dict] = []
 
         # Use caller-supplied limit or default to 100. Was hardcoded to 20 which silently
         # dropped files in medium-sized changesets (e.g., a refactor touching 30+ files).
@@ -121,12 +123,14 @@ async def handle_code_intel_reindex(req_id: str, params: dict, send, state) -> N
                 from pathlib import Path as _Path
                 content = _Path(file_path).read_text(encoding="utf-8", errors="ignore")
                 analysis = analyze_file(file_path, content)
+                syms = analysis.get("symbols", [])
                 # 通过 bridge 写入 Rust SQLite（不使用 subprocess）
                 await bridge.call("code_intel.ingest_tree_sitter", {
                     "file":    file_path,
-                    "symbols": analysis.get("symbols", []),
+                    "symbols": syms,
                 })
-                results.append({"file": file_path, "ok": True, "symbols": len(analysis.get("symbols", []))})
+                results.append({"file": file_path, "ok": True, "symbols": len(syms)})
+                _analyzed_symbols.extend(syms)  # collect for LanceDB embedding
             except Exception as e:
                 log.debug("Reindex failed for %s: %s", file_path, e)
                 results.append({"file": file_path, "ok": False, "error": str(e)})
@@ -144,17 +148,17 @@ async def handle_code_intel_reindex(req_id: str, params: dict, send, state) -> N
         async def _ingest_chunks_bg():
             try:
                 from evocli_soul.code_chunks import get_index as _get_ci
-                # Collect symbol data from results that succeeded
-                symbols_to_ingest = []
-                for r in results:
-                    if r.get("ok") and r.get("symbols"):
-                        # symbols were indexed into Rust; fetch them back for embedding
-                        pass
-                # Trigger a lightweight ingest for changed files only
+                if not _analyzed_symbols:
+                    log.debug("code_chunks: no symbols to embed — skipping background ingest")
+                    return
                 idx = _get_ci(params.get("project", "."))
-                # The symbols list is empty here; ingest_symbols will skip without data.
-                # A full ingest is triggered by 'evocli index' via the CLI.
-                log.debug("code_chunks: background ingest triggered after reindex")
+                ingest_result = await idx.ingest_symbols(_analyzed_symbols)
+                log.debug(
+                    "code_chunks: background ingest done — ingested=%d skipped=%d errors=%d",
+                    ingest_result.get("ingested", 0),
+                    ingest_result.get("skipped", 0),
+                    ingest_result.get("errors", 0),
+                )
             except Exception as _e:
                 log.debug("code_chunks: background ingest failed (non-fatal): %s", _e)
         _asyncio.create_task(_ingest_chunks_bg())
@@ -356,7 +360,6 @@ async def handle_code_ingest_chunks(req_id: str, params: dict, send, state) -> N
     """
     try:
         from evocli_soul.code_chunks import get_index as _get_chunk_idx
-        import json as _json
 
         project_id = params.get("project_id", ".")
         force      = params.get("force", False)

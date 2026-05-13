@@ -154,21 +154,25 @@ pub fn git_diff(repo: &Path) -> Result<String> {
 pub fn git_diff_ext(
     repo: &Path,
     path: &str,
-    staged: Option<bool>,   // Some(true)=staged, Some(false)=unstaged, None=both
+    staged: Option<bool>, // Some(true)=staged, Some(false)=unstaged, None=both
     stat: bool,
     base: &str,
 ) -> Result<String> {
     let mut args_base: Vec<&str> = vec!["diff"];
 
     // stat mode: show summary instead of full diff
-    if stat { args_base.push("--stat"); }
+    if stat {
+        args_base.push("--stat");
+    }
 
     // base: compare against a reference (branch/commit)
     // e.g. "git diff main...HEAD" or "git diff abc123"
-    if !base.is_empty() { args_base.push(base); }
+    if !base.is_empty() {
+        args_base.push(base);
+    }
 
     // staged/unstaged
-    let do_staged   = staged.unwrap_or(true);
+    let do_staged = staged.unwrap_or(true);
     let do_unstaged = staged.map_or(true, |s| !s);
 
     let path_args: Vec<&str> = if path.is_empty() {
@@ -185,7 +189,9 @@ pub fn git_diff_ext(
         a.extend(path_args.iter());
         let out = run_git(repo, &a)?;
         if !out.is_empty() {
-            if staged.is_none() { result.push_str("=== STAGED ===\n"); }
+            if staged.is_none() {
+                result.push_str("=== STAGED ===\n");
+            }
             result.push_str(&out);
             result.push('\n');
         }
@@ -196,7 +202,9 @@ pub fn git_diff_ext(
         a.extend(path_args.iter());
         let out = run_git(repo, &a)?;
         if !out.is_empty() {
-            if staged.is_none() { result.push_str("=== UNSTAGED ===\n"); }
+            if staged.is_none() {
+                result.push_str("=== UNSTAGED ===\n");
+            }
             result.push_str(&out);
         }
     }

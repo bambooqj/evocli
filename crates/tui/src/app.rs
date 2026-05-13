@@ -63,11 +63,15 @@ pub enum StepStatus {
 /// A single chat message
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
-    User(String),
+    User {
+        text: String,
+        timestamp: String,
+    },
     Assistant {
         content: String,
         model: String,
         tokens: usize,
+        timestamp: String,
     },
     System(String),
     /// P1-5: Skill 执行结果摘要
@@ -91,6 +95,19 @@ pub enum ChatMessage {
         display: String,
         ok: Option<bool>, // None=进行中, Some(true)=成功, Some(false)=失败
     },
+}
+
+/// Get current time as HH:MM string (UTC, no chrono dependency).
+pub fn now_hhmm() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mins = (secs / 60) % (24 * 60);
+    let h = mins / 60;
+    let m = mins % 60;
+    format!("{h:02}:{m:02}")
 }
 
 /// Main application state
@@ -188,6 +205,18 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "/compact",
         "Compress session history to free context space (alias)",
+    ),
+    (
+        "/undo",
+        "Undo last turn: remove from history + restore git snapshot",
+    ),
+    (
+        "/plan <task>",
+        "Plan mode: read-only analysis, outputs structured PLAN",
+    ),
+    (
+        "/btw <question>",
+        "Aside question: not saved to history, no context pollution",
     ),
     ("/flows", "List automatically learned tool flows"),
     ("/add <file>", "Pin a file to context for all turns"),
@@ -330,6 +359,7 @@ impl App {
             content: String::new(),
             model: self.model_name.clone(),
             tokens: 0,
+            timestamp: now_hhmm(),
         });
         self.scroll = usize::MAX; // auto-scroll to bottom (clamped in ui.rs)
         self.cache_dirty = true;
@@ -416,7 +446,7 @@ impl App {
                 if removed >= excess {
                     return true;
                 }
-                if matches!(m, ChatMessage::User(_) | ChatMessage::Assistant { .. }) {
+                if matches!(m, ChatMessage::User { .. } | ChatMessage::Assistant { .. }) {
                     removed += 1;
                     false
                 } else {
@@ -493,24 +523,24 @@ impl App {
         };
     }
 
-    /// PgUp — scroll up 3 rows (keyboard shortcut).
+    /// PgUp — scroll up 5 rows (keyboard shortcut).
     pub fn scroll_up(&mut self) {
-        self.scroll_up_n(3);
-    }
-
-    /// PgDn — scroll down 3 rows (keyboard shortcut).
-    pub fn scroll_down(&mut self) {
-        self.scroll_down_n(3);
-    }
-
-    /// Alt+Up — fast scroll up (5 lines).
-    pub fn scroll_fast_up(&mut self) {
         self.scroll_up_n(5);
     }
 
-    /// Alt+Down — fast scroll down (5 lines).
-    pub fn scroll_fast_down(&mut self) {
+    /// PgDn — scroll down 5 rows (keyboard shortcut).
+    pub fn scroll_down(&mut self) {
         self.scroll_down_n(5);
+    }
+
+    /// Alt+Up — fast scroll up (15 lines).
+    pub fn scroll_fast_up(&mut self) {
+        self.scroll_up_n(15);
+    }
+
+    /// Alt+Down — fast scroll down (15 lines).
+    pub fn scroll_fast_down(&mut self) {
+        self.scroll_down_n(15);
     }
 
     /// Ctrl+Home / Home — scroll to top (oldest messages).

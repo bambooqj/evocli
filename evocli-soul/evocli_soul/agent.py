@@ -236,18 +236,39 @@ class EvoCLIAgent:
 
         bridge = self.bridge  # closure capture — agent instances share bridge
 
+        def _sc_display(method: str, params: dict) -> str:
+            """Build a short human-readable display string for a tool call."""
+            # Pick the most meaningful param value for the label
+            for key in ("path", "cmd", "pattern", "query", "symbol", "name",
+                        "url", "content", "prompt", "text"):
+                val = params.get(key)
+                if val and isinstance(val, str):
+                    short = val.replace("\n", " ").strip()
+                    short = short if len(short) <= 48 else short[:45] + "…"
+                    return f"{method}  {short}"
+            return method
+
         async def _sc(method: str, params: dict) -> str:
             """Safe bridge call — catches ALL exceptions and returns error strings.
 
             pydantic-ai propagates unhandled tool exceptions as stream failures.
             Returning an error string lets the model see what went wrong and
             try an alternative approach, instead of crashing the whole session.
+
+            Emits tool_call_start / tool_call_done events so the TUI shows real-time
+            tool activity for ALL pydantic-ai tools (was only shown in LiteLLM fallback).
             """
+            from evocli_soul.rpc import emit_event as _emit_sc
+            display = _sc_display(method, params)
+            await _emit_sc("tool_call_start", {"tool": method, "display": display})
             try:
                 result = await bridge.call(method, params)
-                return result if isinstance(result, str) else _json.dumps(result, ensure_ascii=False)
+                out = result if isinstance(result, str) else _json.dumps(result, ensure_ascii=False)
+                await _emit_sc("tool_call_done", {"tool": method, "ok": True})
+                return out
             except Exception as _tool_err:
                 log.warning("tool %s failed: %s", method, _tool_err)
+                await _emit_sc("tool_call_done", {"tool": method, "ok": False})
                 return f"Error: {_tool_err}"
 
         @agent.tool_plain
@@ -648,6 +669,11 @@ class EvoCLIAgent:
             max_chars: max characters to return (default 8000 ≈ 2k tokens)
             selector:  optional CSS selector to extract specific element (e.g. 'article', 'main')
             """
+            # Use native Rust web.fetch RPC — faster, no Python dependency on httpx/readability
+            _params: dict = {"url": url, "max_chars": max_chars}
+            if selector:
+                _params["selector"] = selector
+            return await _sc("web.fetch", _params)
 
         @agent.tool_plain
         async def code_semantic_search(
@@ -713,11 +739,6 @@ class EvoCLIAgent:
                 }, ensure_ascii=False)
             except Exception as e:
                 return _json.dumps({"error": str(e), "query": query}, ensure_ascii=False)
-            # Use native Rust web.fetch RPC — faster, no Python dependency on httpx/readability
-            params: dict = {"url": url, "max_chars": max_chars}
-            if selector:
-                params["selector"] = selector
-            return await _sc("web.fetch", params)
 
         # ── GitNexus-inspired knowledge graph tools ──────────────────────
         @agent.tool_plain

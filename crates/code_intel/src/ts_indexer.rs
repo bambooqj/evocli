@@ -20,11 +20,11 @@ pub struct CallRef {
 /// Returns None for unsupported languages (caller falls back to word-matching).
 pub fn extract_calls(source: &str, ext: &str) -> Option<Vec<CallRef>> {
     match ext {
-        "rs"              => extract_calls_rust(source),
-        "py"              => extract_calls_python(source),
-        "js" | "jsx"      => extract_calls_js(source),
-        "ts" | "tsx"      => extract_calls_ts(source),
-        _                 => None,
+        "rs" => extract_calls_rust(source),
+        "py" => extract_calls_python(source),
+        "js" | "jsx" => extract_calls_js(source),
+        "ts" | "tsx" => extract_calls_ts(source),
+        _ => None,
     }
 }
 
@@ -45,14 +45,29 @@ fn run_call_query(
     for m in cursor.matches(&query, tree.root_node(), src_bytes) {
         for cap in m.captures {
             let idx = cap.index as usize;
-            if query.capture_names().get(idx).map(|n| *n == "callee").unwrap_or(false) {
+            if query
+                .capture_names()
+                .get(idx)
+                .map(|n| *n == "callee")
+                .unwrap_or(false)
+            {
                 if let Ok(text) = std::str::from_utf8(&src_bytes[cap.node.byte_range()]) {
                     let name = text.to_string();
                     // Filter: skip very short names and common keywords that aren't real calls
                     if name.len() >= 3
-                        && !matches!(name.as_str(),
-                            "if" | "for" | "let" | "mut" | "pub" | "fn" | "use"
-                            | "mod" | "impl" | "self" | "super" | "crate"
+                        && !matches!(
+                            name.as_str(),
+                            "if" | "for"
+                                | "let"
+                                | "mut"
+                                | "pub"
+                                | "fn"
+                                | "use"
+                                | "mod"
+                                | "impl"
+                                | "self"
+                                | "super"
+                                | "crate"
                         )
                     {
                         results.push(CallRef {
@@ -180,7 +195,7 @@ fn run_query(
             let line_end = if def_line_end > name_line {
                 def_line_end
             } else {
-                name_line + 1  // fallback: at least one line
+                name_line + 1 // fallback: at least one line
             };
             results.push(TsSymbol {
                 name,
@@ -240,4 +255,3 @@ fn extract_typescript(source: &str) -> Option<Vec<TsSymbol>> {
         "typescript",
     )
 }
-

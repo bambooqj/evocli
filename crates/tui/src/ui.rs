@@ -17,7 +17,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+        Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
     Frame,
 };
@@ -98,14 +99,11 @@ fn safe_tail<'a>(s: &'a str, n: usize) -> &'a str {
     let start = s.char_indices().nth(c - n).map(|(i, _)| i).unwrap_or(0);
     &s[start..]
 }
-fn input_area_height(h: u16) -> u16 {
-    if h >= 40 {
-        4
-    } else if h >= 25 {
-        3
-    } else {
-        3
-    }
+fn input_area_height(term_h: u16, textarea_lines: usize) -> u16 {
+    let n = textarea_lines.max(1) as u16;
+    let base = (n + 2).clamp(3, 8);
+    // Don't let input area exceed 1/3 of terminal height
+    base.min(term_h / 3).max(3)
 }
 
 /// Word-wrap a single line of text to fit within `width` characters.
@@ -166,7 +164,7 @@ pub fn draw(f: &mut Frame, app: &mut App, textarea: &TextArea<'_>) {
         draw_tiny_mode(f, app, area);
         return;
     }
-    let input_h = input_area_height(area.height);
+    let input_h = input_area_height(area.height, textarea.lines().len());
     let has_notif = app.notification.is_some();
     let notif_row = if has_notif {
         Constraint::Length(1)
@@ -689,6 +687,40 @@ fn draw_chat_area(f: &mut Frame, app: &mut App, area: Rect, mode: LayoutMode) {
             .scroll((row_offset.min(u16::MAX as usize) as u16, 0)),
         area,
     );
+
+    // ── Vertical scrollbar ────────────────────────────────────────────────────
+    if max_scroll > 0 {
+        let mut sb_state = ScrollbarState::new(max_scroll).position(scroll_vrow);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None);
+        let sb_area = Rect {
+            x: area.right().saturating_sub(1),
+            y: area.top() + 1,
+            width: 1,
+            height: area.height.saturating_sub(2),
+        };
+        f.render_stateful_widget(sb, sb_area, &mut sb_state);
+    }
+
+    // ── Thinking overlay when scrolled up ────────────────────────────────────
+    if (thinking || streaming) && !at_bottom {
+        let spin = spinner_frame(app.spinner_tick);
+        let label = format!(" {spin} Thinking… ");
+        let lw = label.chars().count() as u16;
+        if area.width > lw + 2 {
+            let overlay = Rect {
+                x: area.right().saturating_sub(lw + 2),
+                y: area.top() + 1,
+                width: lw,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(label).style(Style::default().fg(C_PURPLE).bg(BG_SURFACE)),
+                overlay,
+            );
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -717,7 +749,7 @@ fn build_all_lines(
     for msg in messages {
         match msg {
             // ── User message ──────────────────────────────────────────────
-            ChatMessage::User(text) => {
+            ChatMessage::User { text, timestamp } => {
                 // Thin separator above user message
                 out.push(Line::from(vec![
                     Span::styled("  ", Style::default()),
@@ -736,6 +768,7 @@ fn build_all_lines(
                             .fg(USER_ACCENT)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(format!("  {timestamp}"), Style::default().fg(FG_DIM)),
                 ]));
                 for raw in text.lines() {
                     out.push(Line::from(vec![
@@ -751,6 +784,7 @@ fn build_all_lines(
                 content,
                 model,
                 tokens,
+                timestamp,
             } => {
                 let model_s: String = if matches!(mode, LayoutMode::Compact | LayoutMode::Tiny) {
                     "AI".into()
@@ -775,6 +809,7 @@ fn build_all_lines(
                         Style::default().fg(AI_ACCENT).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(tok_s, Style::default().fg(FG_DIM)),
+                    Span::styled(format!("  {timestamp}"), Style::default().fg(FG_DIM)),
                 ]));
 
                 let mut in_diff = false;
@@ -839,10 +874,14 @@ fn build_all_lines(
 
             // ── Tool call — compact badge (Claude Code 风格) ──────────────
             ChatMessage::ToolCall { display, ok, .. } => {
-                let (icon, accent) = match ok {
-                    None => ("  ↻ ", C_ORANGE),
-                    Some(true) => ("  ✓ ", C_GREEN),
-                    Some(false) => ("  ✗ ", C_RED),
+                let (icon, accent, text_style) = match ok {
+                    None => ("  ↻ ", C_ORANGE, Style::default().fg(FG_SUBTEXT)),
+                    Some(true) => ("  ✓ ", C_GREEN, Style::default().fg(FG_SUBTEXT)),
+                    Some(false) => (
+                        "  ✗ ",
+                        C_RED,
+                        Style::default().fg(C_RED).add_modifier(Modifier::DIM),
+                    ),
                 };
                 let max_d = content_width.saturating_sub(8);
                 let d: String = display.chars().take(max_d).collect();
@@ -853,10 +892,7 @@ fn build_all_lines(
                 };
                 out.push(Line::from(vec![
                     Span::styled(icon, Style::default().fg(accent)),
-                    Span::styled(
-                        format!("{d}{ell}"),
-                        Style::default().fg(if ok.is_none() { FG_SUBTEXT } else { FG_DIM }),
-                    ),
+                    Span::styled(format!("{d}{ell}"), text_style),
                 ]));
             }
 
@@ -1760,18 +1796,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
         LayoutMode::Wide => {
             spans.extend(kb("^C", ":quit "));
             spans.extend(kb("Enter", ":send "));
-            spans.extend(kb("S+Enter", ":newline "));
             spans.extend(kb("PgUp/Dn", ":scroll "));
-            spans.extend(kb("Home/End", ":top/end "));
-            spans.extend(kb("/help", ":cmds "));
-            spans.extend(kb("F12", ":log"));
+            spans.extend(kb("?", ":help"));
         }
         LayoutMode::Normal => {
             spans.extend(kb("^C", ":quit "));
             spans.extend(kb("Enter", ":send "));
-            spans.extend(kb("PgUp/Dn", ":scroll "));
-            spans.extend(kb("/help", ":cmds "));
-            spans.extend(kb("F12", ":log"));
+            spans.extend(kb("?", ":help"));
         }
         LayoutMode::Compact => {
             spans.extend(kb("^C", " "));

@@ -87,7 +87,7 @@ async def handle_hybrid_search(req_id: str, params: dict, send, state) -> None:
                     "rank":      i + 1,
                 })
         except Exception as e:
-            log.debug("Vector search failed (non-fatal): %s", e)
+            log.warning("Vector search failed (non-fatal, BM25-only fallback): %s", e)
 
         # 3. RRF merge (K=60)
         K = 60.0

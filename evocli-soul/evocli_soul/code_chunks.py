@@ -28,11 +28,9 @@ code_chunks.py — Semantic Code Chunk Index
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger("evocli.code_chunks")
 
@@ -108,7 +106,6 @@ class CodeChunkIndex:
                 # Create table with first dummy row to establish schema
                 dummy = {**schema}
                 dummy["id"] = "__init__"
-                import pyarrow as pa
                 self._tbl = self._db.create_table(
                     COLLECTION,
                     data=[dummy],
@@ -221,7 +218,6 @@ class CodeChunkIndex:
         batch: list[dict] = []
 
         for sym in symbols:
-            sym_id   = sym.get("id", "")
             name     = sym.get("name", "")
             kind     = sym.get("kind", "function")
             file_path = sym.get("file", "")
@@ -481,7 +477,6 @@ class CodeChunkIndex:
             # Build prompt with code snippets
             snippets = []
             for body_info in bodies[:max_symbols_per_community]:
-                sym_name = body_info.get("symbol", "")
                 file_    = body_info.get("file", "")
                 body     = (body_info.get("body", "") or "")[:500]
                 if body:

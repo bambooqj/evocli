@@ -670,12 +670,29 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
         "tool_call_start" => {
             let tool = event["tool"].as_str().unwrap_or("").to_string();
             let display = event["display"].as_str().unwrap_or(&tool).to_string();
-            // FIX-B: 在对话中显示正在调用的工具
-            app.messages.push(ChatMessage::ToolCall {
-                tool: tool.clone(),
-                display: display.clone(),
-                ok: None,
-            });
+
+            // Insert the ToolCall BEFORE the empty Assistant placeholder (if one exists at the
+            // end of messages). start_streaming() pushes an empty Assistant{} immediately when
+            // the user submits, but tool calls actually execute BEFORE the model generates text.
+            // Without this fix, ToolCall badges appear after the response text — visually wrong
+            // and easily missed. Inserting before the placeholder preserves the correct order:
+            //   ↻ tool_a …
+            //   ✓ tool_a …
+            //   ◆ model   <response text>
+            let insert_at = match app.messages.last() {
+                Some(ChatMessage::Assistant { content, .. }) if content.is_empty() => {
+                    app.messages.len().saturating_sub(1)
+                }
+                _ => app.messages.len(),
+            };
+            app.messages.insert(
+                insert_at,
+                ChatMessage::ToolCall {
+                    tool: tool.clone(),
+                    display: display.clone(),
+                    ok: None,
+                },
+            );
             app.invalidate_cache();
             app.state = AppState::CallingTool { tool, display };
         }

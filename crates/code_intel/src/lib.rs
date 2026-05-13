@@ -58,10 +58,6 @@ CREATE TABLE IF NOT EXISTS symbols (
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file);
-
--- Migration: add line_end column if upgrading from old schema (idempotent)
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, kind);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id, kind);
 "#;
 
 const SCHEMA_EDGES: &str = r#"
@@ -73,6 +69,8 @@ CREATE TABLE IF NOT EXISTS edges (
     line      INTEGER,
     PRIMARY KEY (source_id, target_id, kind)
 );
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id, kind);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id, kind);
 "#;
 
 // ── Regex patterns (compiled once via OnceLock) ─────────────────
@@ -135,8 +133,10 @@ impl CodeIndex {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(SCHEMA_EDGES)?;
         // Migration: add columns for old schemas
-        let _ = conn.execute_batch("ALTER TABLE symbols ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0");
-        let _ = conn.execute_batch("ALTER TABLE symbols ADD COLUMN body_hash TEXT NOT NULL DEFAULT ''");
+        let _ = conn
+            .execute_batch("ALTER TABLE symbols ADD COLUMN line_end INTEGER NOT NULL DEFAULT 0");
+        let _ =
+            conn.execute_batch("ALTER TABLE symbols ADD COLUMN body_hash TEXT NOT NULL DEFAULT ''");
         Ok(Self { conn })
     }
 
@@ -185,14 +185,14 @@ impl CodeIndex {
         if let Some(ts_symbols) = crate::ts_indexer::extract_symbols(&content, ext) {
             // Load existing body_hash per symbol name for this file (incremental skip)
             let existing_hashes: std::collections::HashMap<String, (String, String)> = {
-                let mut stmt = self.conn.prepare(
-                    "SELECT name, id, body_hash FROM symbols WHERE file = ?1"
-                )?;
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT name, id, body_hash FROM symbols WHERE file = ?1")?;
                 let mut map = std::collections::HashMap::new();
                 let mut rows = stmt.query(params![file_str])?;
                 while let Some(row) = rows.next()? {
                     let name: String = row.get(0)?;
-                    let id: String   = row.get(1)?;
+                    let id: String = row.get(1)?;
                     let hash: String = row.get(2).unwrap_or_default();
                     map.insert(name, (id, hash));
                 }
@@ -206,7 +206,11 @@ impl CodeIndex {
 
             for sym in &ts_symbols {
                 let line_idx = (sym.line.saturating_sub(1)) as usize;
-                let signature = content_lines.get(line_idx).unwrap_or(&"").trim().to_string();
+                let signature = content_lines
+                    .get(line_idx)
+                    .unwrap_or(&"")
+                    .trim()
+                    .to_string();
 
                 // Extract body for hash: from line_start to line_end (or line_start+50 estimate)
                 let body_end = if sym.line_end > sym.line {
@@ -234,7 +238,10 @@ impl CodeIndex {
                     }
                     // Changed — delete old entry so we can re-insert with new UUID
                     tx.execute("DELETE FROM symbols WHERE id = ?1", params![existing_id])?;
-                    tx.execute("DELETE FROM edges WHERE source_id = ?1 OR target_id = ?1", params![existing_id])?;
+                    tx.execute(
+                        "DELETE FROM edges WHERE source_id = ?1 OR target_id = ?1",
+                        params![existing_id],
+                    )?;
                 }
 
                 let id = Uuid::new_v4().to_string();
@@ -355,11 +362,13 @@ impl CodeIndex {
                 for n in &names_vec {
                     params.push(Box::new(n.to_string()));
                 }
-                let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    params.iter().map(|b| b.as_ref()).collect();
 
                 let callee_map: std::collections::HashMap<String, String> = stmt
                     .query_map(param_refs.as_slice(), |row| {
-                        Ok((row.get::<_, String>(1)?, row.get::<_, String>(0)?)) // name → id
+                        Ok((row.get::<_, String>(1)?, row.get::<_, String>(0)?))
+                        // name → id
                     })?
                     .filter_map(|r| r.ok())
                     .collect();
@@ -745,6 +754,3 @@ mod tests {
         Ok(())
     }
 }
-
-
-

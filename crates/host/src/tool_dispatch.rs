@@ -89,9 +89,9 @@ pub async fn dispatch(
             Ok(serde_json::to_value(entries)?)
         }
         "git.diff" => {
-            let path   = args["path"].as_str().unwrap_or("");
-            let stat   = args["stat"].as_bool().unwrap_or(false);
-            let base   = args["base"].as_str().unwrap_or("");
+            let path = args["path"].as_str().unwrap_or("");
+            let stat = args["stat"].as_bool().unwrap_or(false);
+            let base = args["base"].as_str().unwrap_or("");
             // staged: true=staged only, false=unstaged only, absent=both
             let staged = if args["staged"].is_null() {
                 None
@@ -754,17 +754,24 @@ pub async fn dispatch(
 
         // ── Shell built-ins (Section 22) ─────────────────────────────────
         "shell.grep" => {
-            let pattern      = args["pattern"].as_str().unwrap_or("");
-            let path         = args["path"].as_str().map(PathBuf::from).unwrap_or(cwd.clone());
+            let pattern = args["pattern"].as_str().unwrap_or("");
+            let path = args["path"]
+                .as_str()
+                .map(PathBuf::from)
+                .unwrap_or(cwd.clone());
             let case_sensitive = args["case_sensitive"].as_bool().unwrap_or(false);
-            let context_lines  = args["context_lines"].as_u64().unwrap_or(0) as usize;
-            let max_results    = args["max_results"].as_u64().unwrap_or(100) as usize;
+            let context_lines = args["context_lines"].as_u64().unwrap_or(0) as usize;
+            let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
             // include: file extension or glob-like suffix, e.g. ".rs" ".py" or "*.toml"
-            let include_ext  = args["include"].as_str().unwrap_or("");
+            let include_ext = args["include"].as_str().unwrap_or("");
             // exclude: path substring to skip, e.g. "target" "node_modules"
-            let exclude_sub  = args["exclude"].as_str().unwrap_or("");
+            let exclude_sub = args["exclude"].as_str().unwrap_or("");
 
-            let pat_lower = if case_sensitive { pattern.to_string() } else { pattern.to_lowercase() };
+            let pat_lower = if case_sensitive {
+                pattern.to_string()
+            } else {
+                pattern.to_lowercase()
+            };
 
             let mut matches: Vec<serde_json::Value> = vec![];
             let mut total_count = 0usize;
@@ -779,29 +786,43 @@ pub async fn dispatch(
                 let p_str = p.to_str().unwrap_or("");
 
                 // Skip common noise dirs
-                if p_str.contains("/target/") || p_str.contains("\\target\\")
-                    || p_str.contains("node_modules") || p_str.contains(".git/")
+                if p_str.contains("/target/")
+                    || p_str.contains("\\target\\")
+                    || p_str.contains("node_modules")
+                    || p_str.contains(".git/")
                     || p_str.contains("\\.git\\")
-                { continue; }
+                {
+                    continue;
+                }
 
                 // User-specified exclude
-                if !exclude_sub.is_empty() && p_str.contains(exclude_sub) { continue; }
+                if !exclude_sub.is_empty() && p_str.contains(exclude_sub) {
+                    continue;
+                }
 
                 // User-specified include (extension filter)
                 if !include_ext.is_empty() {
                     let ext_filter = include_ext.trim_start_matches('*').trim_start_matches('.');
                     let file_ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
                     let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if !file_ext.eq_ignore_ascii_case(ext_filter) && !file_name.contains(include_ext) {
+                    if !file_ext.eq_ignore_ascii_case(ext_filter)
+                        && !file_name.contains(include_ext)
+                    {
                         continue;
                     }
                 }
 
-                let Ok(content) = std::fs::read_to_string(p) else { continue };
+                let Ok(content) = std::fs::read_to_string(p) else {
+                    continue;
+                };
                 let lines: Vec<&str> = content.lines().collect();
 
                 for (i, line) in lines.iter().enumerate() {
-                    let hay = if case_sensitive { line.to_string() } else { line.to_lowercase() };
+                    let hay = if case_sensitive {
+                        line.to_string()
+                    } else {
+                        line.to_lowercase()
+                    };
                     if hay.contains(&pat_lower) {
                         total_count += 1;
                         if matches.len() < max_results {
@@ -813,15 +834,17 @@ pub async fn dispatch(
                             // Context lines: before + after
                             if context_lines > 0 {
                                 let before_start = i.saturating_sub(context_lines);
-                                let after_end    = (i + context_lines + 1).min(lines.len());
+                                let after_end = (i + context_lines + 1).min(lines.len());
                                 let before: Vec<&str> = lines[before_start..i].to_vec();
-                                let after:  Vec<&str> = lines[(i + 1)..after_end].to_vec();
+                                let after: Vec<&str> = lines[(i + 1)..after_end].to_vec();
                                 m["before"] = serde_json::json!(before);
-                                m["after"]  = serde_json::json!(after);
+                                m["after"] = serde_json::json!(after);
                             }
                             matches.push(m);
                         }
-                        if total_count >= max_results * 10 { break 'outer; } // safety cap
+                        if total_count >= max_results * 10 {
+                            break 'outer;
+                        } // safety cap
                     }
                 }
             }
@@ -835,14 +858,21 @@ pub async fn dispatch(
             }))
         }
         "shell.find" => {
-            let name_pat    = args["name"].as_str().unwrap_or("");
-            let path        = args["path"].as_str().map(PathBuf::from).unwrap_or(cwd.clone());
+            let name_pat = args["name"].as_str().unwrap_or("");
+            let path = args["path"]
+                .as_str()
+                .map(PathBuf::from)
+                .unwrap_or(cwd.clone());
             // extension: filter by file extension, e.g. "rs" or ".rs" or "*.rs"
-            let ext_filter  = args["extension"].as_str().unwrap_or("").trim_start_matches('*').trim_start_matches('.');
+            let ext_filter = args["extension"]
+                .as_str()
+                .unwrap_or("")
+                .trim_start_matches('*')
+                .trim_start_matches('.');
             // type: "file" | "dir" | "" (both, default)
             let type_filter = args["type"].as_str().unwrap_or("");
             // depth: max recursion depth (0 = unlimited)
-            let max_depth   = args["depth"].as_u64().unwrap_or(0) as usize;
+            let max_depth = args["depth"].as_u64().unwrap_or(0) as usize;
             // case_sensitive: default false
             let case_sensitive = args["case_sensitive"].as_bool().unwrap_or(false);
             // max_results: default 200
@@ -850,7 +880,11 @@ pub async fn dispatch(
             // exclude: path substring to skip
             let exclude_sub = args["exclude"].as_str().unwrap_or("");
 
-            let name_lower = if case_sensitive { name_pat.to_string() } else { name_pat.to_lowercase() };
+            let name_lower = if case_sensitive {
+                name_pat.to_string()
+            } else {
+                name_pat.to_lowercase()
+            };
 
             let walker = if max_depth > 0 {
                 walkdir::WalkDir::new(&path).max_depth(max_depth)
@@ -861,40 +895,56 @@ pub async fn dispatch(
             let mut found: Vec<String> = vec![];
 
             for entry in walker.into_iter().flatten() {
-                if found.len() >= max_results { break; }
+                if found.len() >= max_results {
+                    break;
+                }
 
-                let p     = entry.path();
+                let p = entry.path();
                 let p_str = p.to_str().unwrap_or("");
 
                 // Skip noise
-                if p_str.contains("/target/") || p_str.contains("\\target\\")
-                    || p_str.contains("node_modules") || p_str.contains("\\.git\\")
+                if p_str.contains("/target/")
+                    || p_str.contains("\\target\\")
+                    || p_str.contains("node_modules")
+                    || p_str.contains("\\.git\\")
                     || p_str.contains("/.git/")
-                { continue; }
+                {
+                    continue;
+                }
 
-                if !exclude_sub.is_empty() && p_str.contains(exclude_sub) { continue; }
+                if !exclude_sub.is_empty() && p_str.contains(exclude_sub) {
+                    continue;
+                }
 
-                let is_dir  = entry.file_type().is_dir();
+                let is_dir = entry.file_type().is_dir();
                 let is_file = entry.file_type().is_file();
 
                 // Type filter
                 match type_filter {
                     "file" if !is_file => continue,
-                    "dir"  if !is_dir  => continue,
-                    _                  => {}
+                    "dir" if !is_dir => continue,
+                    _ => {}
                 }
 
                 // Extension filter (files only)
                 if !ext_filter.is_empty() && is_file {
                     let file_ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if !file_ext.eq_ignore_ascii_case(ext_filter) { continue; }
+                    if !file_ext.eq_ignore_ascii_case(ext_filter) {
+                        continue;
+                    }
                 }
 
                 // Name filter
                 if !name_pat.is_empty() {
                     let fname = entry.file_name().to_string_lossy().to_string();
-                    let hay   = if case_sensitive { fname.clone() } else { fname.to_lowercase() };
-                    if !hay.contains(&name_lower) { continue; }
+                    let hay = if case_sensitive {
+                        fname.clone()
+                    } else {
+                        fname.to_lowercase()
+                    };
+                    if !hay.contains(&name_lower) {
+                        continue;
+                    }
                 }
 
                 found.push(p.display().to_string());
@@ -913,10 +963,10 @@ pub async fn dispatch(
                 .as_str()
                 .map(PathBuf::from)
                 .unwrap_or(cwd.clone());
-            let long         = args["long"].as_bool().unwrap_or(false);
-            let tree         = args["tree"].as_bool().unwrap_or(false);
-            let depth        = args["depth"].as_u64().unwrap_or(1) as usize; // 1=flat, 0=unlimited
-            let show_hidden  = args["show_hidden"].as_bool().unwrap_or(false);
+            let long = args["long"].as_bool().unwrap_or(false);
+            let tree = args["tree"].as_bool().unwrap_or(false);
+            let depth = args["depth"].as_u64().unwrap_or(1) as usize; // 1=flat, 0=unlimited
+            let show_hidden = args["show_hidden"].as_bool().unwrap_or(false);
 
             if tree {
                 // Tree-format output as a single string
@@ -930,7 +980,9 @@ pub async fn dispatch(
                     max_depth: usize,
                     show_hidden: bool,
                 ) {
-                    let Ok(mut entries) = std::fs::read_dir(dir) else { return };
+                    let Ok(mut entries) = std::fs::read_dir(dir) else {
+                        return;
+                    };
                     let mut items: Vec<_> = entries
                         .flatten()
                         .filter(|e| {
@@ -939,15 +991,15 @@ pub async fn dispatch(
                         .collect();
                     items.sort_by_key(|e| {
                         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                        (!is_dir, e.file_name())  // dirs first, then alpha
+                        (!is_dir, e.file_name()) // dirs first, then alpha
                     });
                     let total = items.len();
                     for (i, entry) in items.iter().enumerate() {
-                        let is_last  = i + 1 == total;
+                        let is_last = i + 1 == total;
                         let connector = if is_last { "└── " } else { "├── " };
                         let child_prefix = if is_last { "    " } else { "│   " };
-                        let name    = entry.file_name().to_string_lossy().to_string();
-                        let is_dir  = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                         let display = if is_dir { format!("{name}/") } else { name };
                         buf.push_str(&format!("{prefix}{connector}{display}\n"));
                         if is_dir && (max_depth == 0 || current_depth < max_depth) {
@@ -977,8 +1029,11 @@ pub async fn dispatch(
                     long: bool,
                     show_hidden: bool,
                 ) -> Vec<serde_json::Value> {
-                    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
-                    let mut items: Vec<_> = rd.flatten()
+                    let Ok(rd) = std::fs::read_dir(dir) else {
+                        return vec![];
+                    };
+                    let mut items: Vec<_> = rd
+                        .flatten()
                         .filter(|e| {
                             show_hidden || !e.file_name().to_string_lossy().starts_with('.')
                         })
@@ -989,10 +1044,10 @@ pub async fn dispatch(
                     });
                     let mut out = vec![];
                     for e in items {
-                        let meta   = e.metadata().ok();
+                        let meta = e.metadata().ok();
                         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                        let size   = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                        let name   = e.file_name().to_string_lossy().to_string();
+                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let name = e.file_name().to_string_lossy().to_string();
                         if long {
                             out.push(serde_json::json!({
                                 "name":   name,
@@ -1000,12 +1055,20 @@ pub async fn dispatch(
                                 "size":   size,
                             }));
                         } else {
-                            out.push(serde_json::json!(
-                                if is_dir { format!("{name}/") } else { name }
-                            ));
+                            out.push(serde_json::json!(if is_dir {
+                                format!("{name}/")
+                            } else {
+                                name
+                            }));
                         }
                         if is_dir && (max_depth == 0 || current_depth < max_depth) {
-                            out.extend(collect_entries(&e.path(), current_depth + 1, max_depth, long, show_hidden));
+                            out.extend(collect_entries(
+                                &e.path(),
+                                current_depth + 1,
+                                max_depth,
+                                long,
+                                show_hidden,
+                            ));
                         }
                     }
                     out

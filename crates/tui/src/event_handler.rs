@@ -215,7 +215,10 @@ pub fn handle_key_event(
                 }
                 *textarea = create_textarea();
                 // Show the queued message immediately in chat so the user sees it
-                app.messages.push(ChatMessage::User(text.clone()));
+                app.messages.push(ChatMessage::User {
+                    text: text.clone(),
+                    timestamp: crate::app::now_hhmm(),
+                });
                 app.scroll = usize::MAX;
                 app.invalidate_cache();
                 return EventAction::Queue(text);
@@ -289,7 +292,10 @@ pub fn handle_key_event(
             }
             app.dismiss_suggestions();
             *textarea = create_textarea();
-            app.messages.push(ChatMessage::User(text.clone()));
+            app.messages.push(ChatMessage::User {
+                text: text.clone(),
+                timestamp: crate::app::now_hhmm(),
+            });
 
             // P3-1: /chain <symbol> — call chain lookup
             if text.starts_with("/chain ") {

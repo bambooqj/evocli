@@ -139,6 +139,9 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
 |---|---|
 | `/help` 或 `/?` | 显示此帮助 |
 | `/compress` 或 `/compact` | 压缩会话历史，释放上下文空间 |
+| `/undo` | 撤销上一轮操作（移除最后一轮历史 + 尝试 git 快照恢复）|
+| `/plan <任务>` | 计划模式：只读分析代码库，生成结构化实现计划（不修改文件）|
+| `/btw <问题>` | 旁白问题：不写入历史，不污染上下文（适合临时性查询）|
 | `/add <文件>` | 将文件固定到每轮上下文中 |
 | `/add list` | 查看已固定的文件 |
 | `/add clear` | 清除所有固定文件 |
@@ -320,6 +323,140 @@ async def handle_agent_stream(req_id: str, params: dict, send, state) -> None:
             await send.stream_chunk(req_id, "\n".join(lines), done=True)
         except Exception as e:
             await send.stream_chunk(req_id, f"获取工具流失败: {e}", done=True)
+        return
+
+    # ── /undo — 撤销上一轮操作（Aider 风格：git snapshot + 历史回滚）──────────
+    if prompt.strip().lower() == "/undo":
+        import evocli_soul.state as _st_undo
+        import os as _os_undo
+        import hashlib as _hashlib_undo
+        _undo_sid = (params.get("session_id") or
+                     "cwd_" + _hashlib_undo.md5(_os_undo.getcwd().encode(),
+                                                  usedforsecurity=False).hexdigest()[:12])
+        try:
+            # Step 1: Pop the last conversation turn from history
+            history = _st_undo.get_history(_undo_sid)
+            popped = False
+            if len(history) >= 2:
+                # Remove the last assistant + user pair
+                last_user = history[-2] if history[-2].get("role") == "user" else None
+                last_asst = history[-1] if history[-1].get("role") == "assistant" else None
+                if last_user and last_asst:
+                    _st_undo.set_history(history[:-2], _undo_sid)
+                    popped = True
+            elif len(history) == 1:
+                _st_undo.set_history([], _undo_sid)
+                popped = True
+
+            # Step 2: Attempt git snapshot restore (most recent evocli snapshot)
+            git_msg = ""
+            try:
+                bridge = state.get_bridge()
+                snap_result = await bridge.call("git.snapshot_list", {})
+                snapshots = snap_result if isinstance(snap_result, list) else []
+                if snapshots:
+                    latest = snapshots[-1]  # most recent snapshot
+                    snap_id = latest.get("id") or latest.get("ref", "")
+                    if snap_id:
+                        await bridge.call("git.snapshot_restore", {"ref": snap_id})
+                        git_msg = f"\n✓ Git snapshot restored: `{snap_id}`"
+                    else:
+                        git_msg = "\n⚠ Snapshot found but no ref to restore."
+                else:
+                    git_msg = "\n⚠ No git snapshots found. Run `evocli git snapshot` to create one."
+            except Exception as ge:
+                git_msg = f"\n⚠ Git restore skipped: {ge}"
+
+            if popped:
+                msg = f"↩ **Undone**: Last conversation turn removed from history.{git_msg}\n\nYou can now rephrase and retry."
+            else:
+                msg = f"↩ Nothing to undo — history is empty.{git_msg}"
+            await send.stream_chunk(req_id, msg, done=True)
+        except Exception as e:
+            await send.stream_chunk(req_id, f"Undo failed: {e}", done=True)
+        return
+
+    # ── /plan — 计划模式（read-only 分析，生成结构化实现计划）────────────────
+    # 参考 Claude Code Plan Mode：只读分析 + 输出 Goal/Approach/Files/Risks 结构
+    if prompt.strip().lower().startswith("/plan"):
+        _plan_args = prompt.strip()[5:].strip()  # text after "/plan"
+        if not _plan_args:
+            await send.stream_chunk(req_id,
+                "**Usage**: `/plan <task description>`\n\n"
+                "Example: `/plan add rate limiting to the API endpoints`\n\n"
+                "Plan Mode analyzes the codebase in read-only mode and produces a structured implementation plan.",
+                done=True)
+            return
+        try:
+            from evocli_soul.agent import EvoCLIAgent
+            import os as _os_plan
+            import hashlib as _hashlib_plan
+            _plan_sid = (params.get("session_id") or
+                         "cwd_" + _hashlib_plan.md5(_os_plan.getcwd().encode(),
+                                                      usedforsecurity=False).hexdigest()[:12])
+            cfg = state.get_config()
+            memory_obj = state.get_memory() if hasattr(state, "get_memory") else None
+            # Force read_only=True — agent cannot write files in plan mode
+            plan_agent = EvoCLIAgent(state.get_bridge(), memory_obj, cfg,
+                                     read_only=True, session_id=_plan_sid)
+            plan_prompt = (
+                f"You are in PLAN MODE — analysis only, no file writes.\n\n"
+                f"Task: {_plan_args}\n\n"
+                f"Produce a structured implementation plan in this format:\n\n"
+                f"## Goal\n[what we're trying to achieve]\n\n"
+                f"## Current State\n[relevant code/dependencies you found]\n\n"
+                f"## Approach\n[step-by-step implementation strategy]\n\n"
+                f"## Files to Modify\n[explicit list of files and what changes]\n\n"
+                f"## Risks & Questions\n[potential blockers, unclear requirements]\n\n"
+                f"Analyze the codebase thoroughly before proposing the plan. "
+                f"DO NOT make any file edits — plan only."
+            )
+            await send.stream_chunk(req_id, "📋 **Plan Mode** — analyzing codebase (read-only)…\n\n", done=False)
+            plan_chunks: list[str] = []
+            async for chunk in plan_agent.stream(plan_prompt, session_id=_plan_sid):
+                if chunk:
+                    await send.stream_chunk(req_id, chunk, done=False)
+                    plan_chunks.append(chunk)
+            await send.stream_chunk(req_id, "", done=True)
+            # Save plan to history so subsequent turns can reference it
+            if plan_chunks:
+                import evocli_soul.state as _st_plan
+                _st_plan.append_history([
+                    {"role": "user",      "content": f"/plan {_plan_args}"},
+                    {"role": "assistant", "content": "".join(plan_chunks)},
+                ], _plan_sid)
+        except Exception as e:
+            await send.stream_chunk(req_id, f"Plan mode failed: {e}", done=True)
+        return
+
+    # ── /btw — 旁白问题（不写入历史，不污染上下文）────────────────────────────
+    # 参考 Claude Code /btw：可以问侧面问题而不污染主对话历史
+    if prompt.strip().lower().startswith("/btw "):
+        _btw_question = prompt.strip()[5:].strip()
+        if not _btw_question:
+            await send.stream_chunk(req_id,
+                "**Usage**: `/btw <question>`\n\nAsks a side question without adding it to conversation history.",
+                done=True)
+            return
+        try:
+            from evocli_soul.agent import EvoCLIAgent
+            import os as _os_btw
+            import hashlib as _hashlib_btw
+            _btw_sid = (params.get("session_id") or
+                        "cwd_" + _hashlib_btw.md5(_os_btw.getcwd().encode(),
+                                                    usedforsecurity=False).hexdigest()[:12])
+            cfg = state.get_config()
+            memory_obj = state.get_memory() if hasattr(state, "get_memory") else None
+            btw_agent = EvoCLIAgent(state.get_bridge(), memory_obj, cfg, session_id=_btw_sid)
+            await send.stream_chunk(req_id, "*[aside — not saved to history]*\n\n", done=False)
+            # Stream the response but do NOT append to session history
+            async for chunk in btw_agent.stream(_btw_question, session_id=_btw_sid):
+                if chunk:
+                    await send.stream_chunk(req_id, chunk, done=False)
+            await send.stream_chunk(req_id, "", done=True)
+            # NOTE: intentionally NOT calling _st.append_history() here
+        except Exception as e:
+            await send.stream_chunk(req_id, f"/btw failed: {e}", done=True)
         return
 
     # Track whether we actually sent any content chunks so we can detect silent failures.

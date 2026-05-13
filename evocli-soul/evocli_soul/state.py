@@ -126,6 +126,11 @@ def append_history(messages: list[dict], session_id: str = "default") -> None:
     _conversation_histories[session_id].extend(pruned)
 
 
+def set_history(messages: list[dict], session_id: str = "default") -> None:
+    """Replace entire conversation history for a session (used by /undo)."""
+    _conversation_histories[session_id] = list(messages)
+
+
 def clear_history(session_id: str = "default") -> None:
     """Clear raw message history for a session while PRESERVING the anchored summary.
 

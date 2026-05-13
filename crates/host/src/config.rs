@@ -748,8 +748,12 @@ pub struct EmbedderConfig {
     pub text_model: String,
 }
 
-fn default_code_model() -> String { "jinaai/jina-embeddings-v2-base-code".into() }
-fn default_text_model() -> String { "jinaai/jina-embeddings-v2-base-zh".into() }
+fn default_code_model() -> String {
+    "jinaai/jina-embeddings-v2-base-code".into()
+}
+fn default_text_model() -> String {
+    "jinaai/jina-embeddings-v2-base-zh".into()
+}
 
 impl Default for EmbedderConfig {
     fn default() -> Self {
@@ -840,11 +844,11 @@ impl Default for Config {
             safety: SafetyConfig::default(),
             security: SecurityConfig::default(),
             memory: MemoryConfig::default(),
-            agent:    AgentConfig::default(),
-            tui:      TuiConfig::default(),
+            agent: AgentConfig::default(),
+            tui: TuiConfig::default(),
             embedder: EmbedderConfig::default(),
             soul_script: None,
-            graph:    GraphConfig::default(),
+            graph: GraphConfig::default(),
         }
     }
 }
