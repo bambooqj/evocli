@@ -454,75 +454,48 @@ async def run_agent_stream_body(
                 AUTO_EXECUTE_THRESH, SUGGEST_THRESH,
             )
             _matched_flow, _flow_score = check_flow_trigger(prompt)
-            # 自动执行要求双重门控：相似度 >= 0.70 AND 历史成功率 >= 0.90
-            # 理由：自动执行完全绕过 LLM 推理，必须是已验证的高可靠模式。
-            # 成功率 < 90% 意味着 10+ 次里就有 1 次失败，对自动化不可接受。
-            # 仅建议（suggest）路径要求较低：成功率 >= 0.60 即可（LLM 会决定是否采用）
-            _AUTO_EXEC_SUCCESS_THRESH = 0.90   # 自动执行：必须有 90%+ 历史成功率
-            _SUGGEST_SUCCESS_THRESH   = 0.60   # 仅建议：60%+ 即可（LLM 判断）
             _flow_success_rate = getattr(_matched_flow, "success_rate", 0.0) if _matched_flow else 0.0
 
-            if (_matched_flow and _flow_score >= AUTO_EXECUTE_THRESH
-                    and _flow_success_rate >= _AUTO_EXEC_SUCCESS_THRESH):
-                # 高置信度：直接建议执行工具流，以 system 消息通知用户
-                _flow_hint = (
-                    _loop_msg(
-                        "tool_flow",
-                        "auto_execute_hint",
-                        name=_matched_flow.name,
-                        steps=" → ".join(s.tool for s in _matched_flow.steps[:5]),
-                        score=f"{_flow_score:.0%}",
-                        success_rate=f"{_matched_flow.success_rate:.0%}",
-                    )
-                )
-                await send.stream_chunk(req_id, _flow_hint, done=False)
-                # 执行工具流
-                _executor = FlowExecutor(state.get_bridge(), cfg)
-                _flow_ctx = {"current_file": params.get("current_file", "")}
+            # ── Voyager 模式：流作为 LLM 的记忆提示，而非执行脚本 ────────────────
+            #
+            # 旧设计 (❌): 高置信度 → 机械重放流步骤，LLM 完全缺席
+            #   问题：上下文差异（不同语言、不同文件结构）无法处理，成功率卡在 90%
+            #
+            # 新设计 (✅): 匹配到流 → 注入到 LLM 上下文作为"历史成功模式"
+            #   LLM 理解模式并基于当前上下文决定如何执行，必然能适应差异
+            #   参考：Voyager (Wang et al., 2023) — 技能程序作为 LLM 少样本示例
+            #         ReWOO (Xu et al., 2023) — 历史计划注入 planner 上下文
+            #         DEPS (Zhu et al., 2023) — 历史模式作为描述性提示
+            #
+            # 门控：只需 success_rate >= 0.60 (说明这个模式有价值值得提示)
+            # 不再有"自动执行"路径——所有执行都经过 LLM 推理
+            _FLOW_HINT_THRESH = 0.60   # 至少 60% 成功率才值得作为提示
 
-                async def _progress_cb(step_n, total, desc, result):
-                    await send.stream_chunk(req_id,
-                        _loop_msg(
-                            "tool_flow",
-                            "step_progress",
-                            icon="✓" if result else "⏳",
-                            current=step_n,
-                            total=total,
-                            description=desc,
-                        ),
-                        done=False)
-
-                _flow_result = await _executor.execute(
-                    _matched_flow, prompt,
-                    context=_flow_ctx,
-                    progress_callback=_progress_cb,
+            if _matched_flow and _flow_score >= SUGGEST_THRESH and _flow_success_rate >= _FLOW_HINT_THRESH:
+                # 构建 Voyager 风格的记忆提示：历史成功模式 + 成功率 + 步骤
+                _steps_desc = "\n".join(
+                    f"  {i+1}. {s.tool}"
+                    + (f"  # {s.description}" if getattr(s, "description", "") else "")
+                    for i, s in enumerate(_matched_flow.steps[:8])
                 )
-                if _flow_result.get("ok"):
-                    _final = _flow_result.get("final_output", "")
-                    await send.stream_chunk(req_id,
-                        _loop_msg("tool_flow", "execution_completed", final_output=_final[:500] if _final else ""),
-                        done=True)
-                    # 持久化本轮历史
-                    _st.append_history([
-                        {"role": "user",      "content": prompt},
-                        {"role": "assistant", "content": _loop_msg("tool_flow", "history_entry", name=_matched_flow.name, output=_final[:1000])},
-                    ], session_id)
-                    return
-                else:
-                    # 工具流失败 → 降级到正常 agent 流程
-                    await send.stream_chunk(req_id,
-                        _loop_msg("tool_flow", "execution_failed", failed_step=_flow_result.get("failed_step")),
-                        done=False)
-            elif (_matched_flow and _flow_score >= SUGGEST_THRESH
-                    and _flow_success_rate >= _SUGGEST_SUCCESS_THRESH):
-                # 中置信度：在响应开头提示有工具流可用（不打断流程）
-                _hint = _loop_msg(
-                    "tool_flow",
-                    "suggestion_hint",
-                    name=_matched_flow.name,
-                    score=f"{_flow_score:.0%}",
+                _flow_memory_hint = (
+                    f"\n\n---\n"
+                    f"💡 **历史成功模式参考** (成功率 {_matched_flow.success_rate:.0%}, "
+                    f"相似度 {_flow_score:.0%})\n"
+                    f"**{_matched_flow.name}** — 过去类似任务使用的工具序列：\n"
+                    f"{_steps_desc}\n"
+                    f"*如果当前任务适合，可参考此模式；如上下文不同请灵活调整。*\n"
+                    f"---\n"
                 )
-                await send.stream_chunk(req_id, _hint, done=False)
+                # 将记忆提示注入为用户消息前缀（进入 LLM 的上下文窗口）
+                # 不直接执行——LLM 看到这个提示后自己决定如何行动
+                prompt = _flow_memory_hint + prompt
+                log.info(
+                    "ToolFlow memory hint injected: %s (similarity=%.0f%% success_rate=%.0f%%)",
+                    _matched_flow.name, _flow_score * 100, _flow_success_rate * 100,
+                )
+                # 更新: 流被"使用"了（作为提示），统计用途但不统计执行成功/失败
+                # 执行结果由后续 task_complete 的正常路径追踪
         except Exception as _tf_err:
             log.debug("ToolFlow trigger check failed (non-fatal): %s", _tf_err)
 

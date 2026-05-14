@@ -383,7 +383,7 @@ def save_flow(flow: ToolFlow, project_local: bool = False) -> Path:
 
 
 def load_flows(project_local: bool = False) -> list[ToolFlow]:
-    """从磁盘加载所有 ToolFlow。"""
+    """从磁盘加载所有 ToolFlow，自动跳过已淘汰（deprecated=True）的流。"""
     d = _flow_dir(project_local)
     if not d.exists():
         return []
@@ -391,6 +391,10 @@ def load_flows(project_local: bool = False) -> list[ToolFlow]:
     for fp in d.glob("*.json"):
         try:
             data = json.loads(fp.read_text(encoding="utf-8"))
+            # 跳过已淘汰的流（低成功率 + 足够数据后自动标记）
+            if data.get("deprecated"):
+                log.debug("Skipping deprecated flow: %s", fp.stem)
+                continue
             flows.append(ToolFlow.from_dict(data))
         except Exception as e:
             log.debug("Failed to load flow %s: %s", fp, e)
@@ -407,7 +411,18 @@ def load_all_flows() -> list[ToolFlow]:
 
 
 def update_flow_stats(flow_id: str, succeeded: bool, project_local: bool = False) -> None:
-    """更新工具流成功/失败统计（记忆加权）。"""
+    """更新工具流成功/失败统计，并自动淘汰长期低成功率的流。
+
+    淘汰规则（优胜劣汰，而非试图修复）：
+    - total_runs >= 10 AND success_rate < 0.40 → deprecated=True
+    - deprecated 的流不会被加载到 FlowTrigger（load_flows 过滤）
+    - 用户可手动删除 ~/.evocli/flows/*.json 清理
+    
+    设计理由：
+    - 工具流是参数模板，失败原因（上下文不匹配、文件结构变化）只有 LLM 才能理解
+    - 静态规则无法"修复"一个流，只能判断它是否值得保留
+    - 低成功率流不应继续触发，但保留文件供用户审计
+    """
     d = _flow_dir(project_local)
     fp = d / f"{flow_id}.json"
     if not fp.exists():
@@ -425,6 +440,22 @@ def update_flow_stats(flow_id: str, succeeded: bool, project_local: bool = False
         total = data["success_count"] + data["failure_count"]
         data["confidence"] = data["success_count"] / total if total > 0 else 0.5
         data["last_used_at"] = time.time()
+
+        # ── 自动淘汰：有足够数据且持续表现差的流标记为 deprecated ─────────────
+        # 条件：至少 10 次尝试 + 成功率 < 40%
+        # 不删除文件（供审计），但 deprecated=True 让 load_flows 跳过它
+        _DEPRECATE_MIN_RUNS    = 10
+        _DEPRECATE_MAX_SUCCESS = 0.40
+        _success_rate = data["success_count"] / total if total > 0 else 0.5
+        if (total >= _DEPRECATE_MIN_RUNS
+                and _success_rate < _DEPRECATE_MAX_SUCCESS
+                and not data.get("deprecated")):
+            data["deprecated"] = True
+            log.info(
+                "ToolFlow %s deprecated: success_rate=%.0f%% after %d runs",
+                flow_id, _success_rate * 100, total,
+            )
+
         fp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         log.debug("Failed to update flow stats: %s", e)
