@@ -17,7 +17,7 @@ class AgentToolSelectorMixin:
         来源：
           - tool_router.select_tools()（3阶段：keyword→tag→embedding）
           - 记忆加权：ToolScoreStore 自动加权历史成功工具
-          - 降级：tool_router 不可用时返回全部 pydantic-ai 工具名
+          - 降级：tool_router 不可用时返回全部已知工具名
         
         副作用：更新 self._selected_tool_names（prepare hook 读取此值）
         """
@@ -29,16 +29,7 @@ class AgentToolSelectorMixin:
             # （防止开发者忘记添加 ToolSpec 导致工具消失）
             for tool_name in list(PYDANTIC_TOOL_NAMES):
                 if tool_name not in REGISTRY_BY_NAME:
-                    # 从 @agent.tool_plain 的函数获取 docstring
-                    if self._agent is not None:
-                        try:
-                            func = getattr(self._agent, tool_name, None)
-                            doc  = (func.__doc__ or "") if func else ""
-                        except Exception:
-                            doc = ""
-                    else:
-                        doc = ""
-                    auto_classify_unknown(tool_name, doc)
+                    auto_classify_unknown(tool_name, "")
 
             names = get_tool_names_for_llm(
                 user_input,
@@ -51,7 +42,7 @@ class AgentToolSelectorMixin:
             return names
         except Exception as e:
             log.debug("ToolRouter unavailable, using all tools (non-fatal): %s", e)
-            # 降级：全部 pydantic-ai 工具
+            # 降级：全部已知工具
             try:
                 from evocli_soul.tool_registry import PYDANTIC_TOOL_NAMES
                 self._selected_tool_names = PYDANTIC_TOOL_NAMES

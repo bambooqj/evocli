@@ -6,9 +6,8 @@ initialization and tool setup. This mixin provides:
   - _build_context / _inject_context: context assembly
   - run / stream: primary execution paths
   - run_architect_mode: Aider Architect/Editor mode
-  - _run_litellm / _stream_litellm: LiteLLM fallback with tool loop
+  - _run_litellm / _stream_litellm: LiteLLM tool loop
   - _detect_test_cmd: auto-detect test runner
-  - _emit_fallback_warning_once: one-time warning
 
 Usage:
   from evocli_soul.agent_execution import AgentExecutionMixin
@@ -26,14 +25,12 @@ class AgentExecutionMixin:
 
     async def run(self, user_input: str, context_params: dict | None = None) -> str:
         """Run agent with context injection."""
-        await self._emit_fallback_warning_once()
         # ── ToolRouter: 选工具（prepare hook 会读取 _selected_tool_names）──────
         self._select_tools_for_request(user_input)
         # Load session history for multi-turn continuity.
         # It is passed directly to _run_litellm's messages array (prior_history).
         # We do NOT pass it to _build_context to avoid embedding it twice —
         # once in user_context and again in the LiteLLM messages array.
-        # Pydantic-AI path gets history via full_input (user_context).
         try:
             import evocli_soul.state as _st_run
             _run_history = _st_run.get_history(self._session_id)
@@ -43,52 +40,11 @@ class AgentExecutionMixin:
         # Build context WITHOUT history (anchored_summary still loads via session_id)
         ctx = await self._build_context(
             user_input, context_params,
-            history=_run_history,   # history goes into user_context for pydantic-ai
+            history=_run_history,
             session_id=self._session_id,
         )
         full_input = await self._inject_context(user_input, ctx)
-    
-        if self._agent is not None:
-            try:
-                result = await self._agent.run(full_input)
-                reply = str(getattr(result, "output", None) or getattr(result, "data", "") or "")
-                # Emit cost_update with real token counts from pydantic-ai RunResult.usage()
-                try:
-                    from evocli_soul.rpc import emit_event as _emit_pai_cost
-                    _usage = result.usage() if callable(getattr(result, "usage", None)) else None
-                    if _usage is not None:
-                        _in  = int(getattr(_usage, "request_tokens",  0) or 0)
-                        _out = int(getattr(_usage, "response_tokens", 0) or 0)
-                        if _in > 0 or _out > 0:
-                            await _emit_pai_cost("cost_update", {
-                                "input_tokens":  _in,
-                                "output_tokens": _out,
-                                "cost_usd":      0.0,  # pydantic-ai doesn't expose cost directly
-                            })
-                            log.debug("pydantic-ai run usage: in=%d out=%d", _in, _out)
-                except Exception as _ue:
-                    log.debug("pydantic-ai run cost_update failed (non-fatal): %s", _ue)
-                if reply:
-                    try:
-                        import evocli_soul.state as _st_persist
-                        _st_persist.append_history([
-                            {"role": "user",      "content": user_input},
-                            {"role": "assistant", "content": reply},
-                        ], self._session_id)
-                    except Exception:
-                        pass
-                return reply
-            except Exception as e:
-                log.warning("Pydantic AI run failed (%s), falling back", e)
-    
-        # LiteLLM fallback: history goes into the messages array via prior_history.
-        # user_context section of full_input already has context (files, diff, summary)
-        # but NOT raw history turns — those come via prior_history in the messages array.
-        # Pass history=[] to avoid double-injecting into full_input above:
-        # actually full_input already has history in user_context from _build_context above.
-        # Use the existing full_input but pass prior_history=[] to _run_litellm to avoid
-        # doubling history in the messages array.
-        # The history is already in full_input's user_context section.
+
         litellm_reply = await self._run_litellm(full_input, ctx, prior_history=None)
         if litellm_reply:
             try:
@@ -242,20 +198,7 @@ class AgentExecutionMixin:
             "applied":         sum(1 for r in apply_results if r.get("ok") and not failed),
             "rolled_back":     failed and checkpoint_ref is not None,
         }
-    
-    async def _emit_fallback_warning_once(self) -> None:
-        """Emit a TUI warning if pydantic-ai failed to initialize (once per agent instance)."""
-        if self._fallback_reason:
-            try:
-                from evocli_soul.rpc import emit_event
-                await emit_event("soul_status", {
-                    "status":  "ready",
-                    "message": f"⚠️ Using LiteLLM fallback (tool calling may be limited): {self._fallback_reason}",
-                })
-            except Exception:
-                pass
-            self._fallback_reason = None  # emit only once
-    
+
     async def stream(self, user_input: str, context_params: dict | None = None,
                      prior_history: list[dict] | None = None,
                      session_id: str = "default") -> AsyncGenerator[str, None]:
@@ -263,8 +206,7 @@ class AgentExecutionMixin:
         # Import once; used for progress events so TUI shows real-time stage names
         # instead of a frozen "Connecting…" spinner. OpenCode/Continue.dev pattern.
         from evocli_soul.rpc import emit_event as _emit_prog
-    
-        await self._emit_fallback_warning_once()
+
         # ── ToolRouter: 选工具（prepare hook 会读取 _selected_tool_names）──────
         self._select_tools_for_request(user_input)
         import asyncio
@@ -275,9 +217,9 @@ class AgentExecutionMixin:
         # in the Rust TUI (app.rs) which is displayed in the input bar border.
         await _emit_prog("soul_status", {"status": "loading", "message": "Loading context…"})
         # History strategy: embed prior_history in user_context via _build_context.
-        # This makes it available to ALL downstream paths (pydantic-ai and LiteLLM)
+        # This makes it available to the LiteLLM path
         # as part of the user message. We do NOT also pass message_history to
-        # pydantic-ai or extend messages arrays — history appears exactly once.
+        # another messages array — history appears exactly once.
         try:
             ctx = await asyncio.wait_for(
                 self._build_context(user_input, context_params,
@@ -290,86 +232,7 @@ class AgentExecutionMixin:
         # ── Stage 2: LLM call — update progress label before blocking network I/O
         await _emit_prog("soul_status", {"status": "loading", "message": "Calling LLM…"})
         full_input = await self._inject_context(user_input, ctx)
-    
-        if self._agent is not None:
-            try:
-                import asyncio as _pai_asyncio
 
-                # pydantic-ai run_stream has NO built-in timeout.
-                # When a tool call fails, pydantic-ai can hang indefinitely
-                # waiting for internal state that never resolves.
-                # Fix: wrap streaming in asyncio.timeout so we can fallback to LiteLLM.
-                _stream_timeout = float(
-                    (self.config or {}).get("agent", {}).get("stream_timeout_s", 120)
-                )
-                _first_chunk_deadline = float(
-                    (self.config or {}).get("agent", {}).get("first_chunk_timeout_s", 30)
-                )
-
-                async def _run_pai_stream():
-                    """Run pydantic-ai stream and yield chunks. Raises on hang."""
-                    chunks_yielded = 0
-                    async with self._agent.run_stream(full_input) as result:
-                        async for chunk in result.stream_text(delta=True):
-                            yield chunk
-                            chunks_yielded += 1
-                    # Emit cost_update after stream ends
-                    try:
-                        from evocli_soul.rpc import emit_event as _emit_pai_cost
-                        _usage = result.usage() if callable(getattr(result, "usage", None)) else None
-                        if _usage is not None:
-                            _in  = int(getattr(_usage, "request_tokens",  0) or 0)
-                            _out = int(getattr(_usage, "response_tokens", 0) or 0)
-                            if _in > 0 or _out > 0:
-                                await _emit_pai_cost("cost_update", {
-                                    "input_tokens": _in, "output_tokens": _out, "cost_usd": 0.0,
-                                })
-                    except Exception as _ue:
-                        log.debug("pydantic-ai stream cost_update failed (non-fatal): %s", _ue)
-
-                # Use asyncio.timeout (Python 3.11+) or asyncio.wait_for wrapper
-                try:
-                    async with _pai_asyncio.timeout(_stream_timeout):
-                        first_chunk = True
-                        _first_chunk_task = None
-                        async for chunk in _run_pai_stream():
-                            if first_chunk:
-                                first_chunk = False
-                            yield chunk
-                    return
-                except _pai_asyncio.TimeoutError:
-                    log.warning(
-                        "Pydantic AI stream timed out after %.0fs — falling back to LiteLLM",
-                        _stream_timeout,
-                    )
-            except AttributeError:
-                # asyncio.timeout not available (Python < 3.11) — use wait_for pattern
-                try:
-                    async with self._agent.run_stream(full_input) as result:
-                        async for chunk in result.stream_text(delta=True):
-                            yield chunk
-                    try:
-                        from evocli_soul.rpc import emit_event as _emit_pai_stream_cost
-                        _usage = result.usage() if callable(getattr(result, "usage", None)) else None
-                        if _usage is not None:
-                            _in  = int(getattr(_usage, "request_tokens",  0) or 0)
-                            _out = int(getattr(_usage, "response_tokens", 0) or 0)
-                            if _in > 0 or _out > 0:
-                                await _emit_pai_stream_cost("cost_update", {
-                                    "input_tokens":  _in,
-                                    "output_tokens": _out,
-                                    "cost_usd":      0.0,
-                                })
-                    except Exception as _ue:
-                        log.debug("pydantic-ai stream cost_update failed (non-fatal): %s", _ue)
-                    return
-                except Exception as e:
-                    log.warning("Pydantic AI stream failed (%s), falling back", e)
-            except Exception as e:
-                log.warning("Pydantic AI stream failed (%s), falling back", e)
-    
-        # Fallback: full_input already has history embedded via _inject_context;
-        # _stream_litellm uses system+user message format (history not re-injected).
         async for chunk in self._stream_litellm(full_input, ctx, prior_history=None):
             yield chunk
     
