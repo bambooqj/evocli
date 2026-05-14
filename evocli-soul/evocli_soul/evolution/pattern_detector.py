@@ -8,8 +8,8 @@ from datetime import datetime
 
 log = logging.getLogger("evocli.evolution.pattern")
 
-PATTERN_THRESHOLD = 3
-EVENT_WINDOW      = 100
+PATTERN_THRESHOLD = 2
+EVENT_WINDOW      = 200
 
 
 @dataclass
@@ -55,3 +55,5 @@ def _sliding_window(sequences: list[list[str]]) -> list[Pattern]:
         Pattern(sequence=list(s), frequency=c, last_seen=datetime.now().isoformat())
         for s, c in counter.most_common(10) if c >= 2
     ]
+
+

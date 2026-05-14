@@ -86,13 +86,13 @@ def _load_recent_events(limit: int = 200, project_id: str | None = None) -> list
                     "SELECT session_id, type, payload "
                     "FROM events "
                     "WHERE project_id = ? OR project_id = '' "
-                    "ORDER BY created_at DESC LIMIT ?",
+                    "ORDER BY created_at ASC LIMIT ?",
                     (safe_pid, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT session_id, type, payload "
-                    "FROM events ORDER BY created_at DESC LIMIT ?",
+                    "FROM events ORDER BY created_at ASC LIMIT ?",
                     (limit,),
                 ).fetchall()
 
@@ -155,4 +155,5 @@ async def _asyncio_loop(
                     )
             except Exception as e:
                 log.debug("Evolution scan error: %s", e)
+
 

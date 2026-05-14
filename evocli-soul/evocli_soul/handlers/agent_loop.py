@@ -418,33 +418,31 @@ async def run_agent_stream_body(
         agent._intent = _intent_profile_early.intent
 
         # ── Fast-fail: no API key configured ─────────────────────────────────
-        # Without this check the code falls through to _stream_litellm, which
-        # makes a real TCP connection to the LLM provider and waits up to 20s
-        # before raising an auth error — especially painful on restricted networks.
-        if agent._agent is None:
-            llm_cfg = (cfg or {}).get("llm", {}) if isinstance(cfg, dict) else {}
-            provider = llm_cfg.get("provider", "anthropic")
-            env_var  = _PROVIDER_ENV.get(provider, "")
+        # With pydantic-ai removed, always check API key directly from config.
+        # Previously guarded by `if agent._agent is None:` which no longer exists.
+        llm_cfg  = (cfg or {}).get("llm", {}) if isinstance(cfg, dict) else {}
+        provider = llm_cfg.get("provider", "anthropic")
+        env_var  = _PROVIDER_ENV.get(provider, "")
 
-            has_key = bool(llm_cfg.get("api_key"))
-            if not has_key and env_var:
-                import os
-                has_key = bool(os.environ.get(env_var))
-            if not has_key and env_var:
-                try:
-                    import keyring as _kr
-                    has_key = bool(_kr.get_password("evocli", provider))
-                except Exception as _kr_err:
-                    log.debug("keyring lookup failed for %s: %s", provider, _kr_err)
+        has_key = bool(llm_cfg.get("api_key"))
+        if not has_key and env_var:
+            import os
+            has_key = bool(os.environ.get(env_var))
+        if not has_key and env_var:
+            try:
+                import keyring as _kr
+                has_key = bool(_kr.get_password("evocli", provider))
+            except Exception as _kr_err:
+                log.debug("keyring lookup failed for %s: %s", provider, _kr_err)
 
-            if not has_key:
-                key_hint = env_var or "YOUR_PROVIDER_API_KEY"
-                await send.stream_chunk(
-                    req_id,
-                    _loop_msg("errors", "no_api_key", provider=provider, key_hint=key_hint),
-                    done=True,
-                )
-                return
+        if not has_key:
+            key_hint = env_var or "YOUR_PROVIDER_API_KEY"
+            await send.stream_chunk(
+                req_id,
+                _loop_msg("errors", "no_api_key", provider=provider, key_hint=key_hint),
+                done=True,
+            )
+            return
 
         # ── Progress events — send stream_chunk (NOT just soul_status) ──────────
         # soul_status does NOT reset the TUI's first_chunk_deadline timer.
