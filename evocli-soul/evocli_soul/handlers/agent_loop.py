@@ -398,10 +398,16 @@ async def run_agent_stream_body(
         agent = EvoCLIAgent(
             state.get_bridge(), memory, cfg,
             session_id=session_id,
-            # Enforce write access from intent profile (Oracle finding: writes_allowed
-            # was classified but not passed to the agent, so read-only intents
-            # like "reviewer" and "researcher" could still mutate files).
-            read_only=not _intent_profile_early.writes_allowed,
+            # read_only=True injects READ_ONLY_EXTENSION into system prompt,
+            # which tells LLM it's in analysis mode and ends with
+            # "分析完成。如需执行修改，请重新提交" — wrong for chat/question.
+            #
+            # Rules:
+            # - chat/question: NOT read_only (just conversational, no mode banner)
+            # - reviewer/planner: read_only=True (genuinely in analysis mode)
+            # - researcher: read_only=True (exploration, no writes)
+            # - coder/debugger/risky: read_only=False (execution tasks)
+            read_only=_intent_profile_early.intent in {"reviewer", "planner", "researcher"},
         )
 
         # ── Fast-fail: no API key configured ─────────────────────────────────
