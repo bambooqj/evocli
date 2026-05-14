@@ -274,11 +274,13 @@ def classify(prompt: str, config: dict | None = None) -> IntentProfile:
     if not prompt or not prompt.strip():
         return profiles["chat"]
 
-    # ── Stage 1: Fast path for very short inputs ──────────────────────────
     stripped = prompt.strip()
-    if len(stripped) <= 10:
-        log.debug("intent: short input (%d chars) → chat", len(stripped))
-        return _with_reason(profiles["chat"], "very short input (≤10 chars)")
+
+    # ── Stage 1 removed: No length-based shortcuts ────────────────────────────
+    # Previously had a "≤10 chars → chat" fast path. This was WRONG because
+    # Chinese text is semantically dense: "帮我分析下当前工程" (9 chars) is a
+    # project analysis request, not a greeting.
+    # The semantic classifier below handles all cases correctly. Let it run.
 
     # ── Stage 2: Semantic classification (embedding-based, zero-shot) ─────
     try:
