@@ -167,6 +167,15 @@ def _log_task_exception(task: asyncio.Task) -> None:
 
 
 async def main() -> None:
+    # ── CRITICAL: Freeze project root BEFORE any other initialization ──────────
+    # Captures the CWD at process start as an immutable session constant.
+    # All tools must call state.get_session_root() instead of os.getcwd() so that
+    # shell commands or subprocess cwd changes don't cause directory drift.
+    # Continue.dev pattern: workspaceFolders[0].fsPath captured once at init.
+    import os as _os_early
+    import evocli_soul.state as _state_early
+    _state_early.set_session_root(_os_early.getcwd())
+
     _setup_logging()
 
     # 显式初始化 bridge 单例（在任何 background task 启动前，消除竞态）

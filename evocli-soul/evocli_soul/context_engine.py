@@ -21,8 +21,9 @@ from pathlib import Path
 
 log = logging.getLogger("evocli.context")
 
-# 默认值（config 未找到时使用）
-_DEFAULT_BUDGET_TOTAL = 32_000
+# 默认 context 预算 — 从 config_defaults 读取，支持 config.toml 覆盖
+from evocli_soul.config_defaults import cfg_int as _cfg_int_ctx
+_DEFAULT_BUDGET_TOTAL = _cfg_int_ctx("llm.default_context_window")
 
 
 def _goal_fingerprint(goal: str) -> str:
@@ -215,140 +216,19 @@ def _compact_history(history: list[dict], budget: int) -> list[dict]:
     return compacted
 
 
-# ── Anchored Summary Compaction (OpenCode pattern) ────────────────────────────
-
-_ANCHORED_SUMMARY_TEMPLATE = """
-You are summarizing an AI coding assistant's session to preserve key context.
-Output EXACTLY this Markdown structure (no extra text):
-
-## Goal
-[One paragraph: what was the user trying to accomplish?]
-
-## Constraints
-[Bullet list: any rules, limitations, or "never do X" statements from the conversation]
-
-## Progress
-### Done
-[Bullet list of completed steps]
-### In Progress
-[What was being worked on when context was compacted]
-### Blocked
-[Any blockers or unresolved issues]
-
-## Key Decisions
-[Bullet list of architectural/design decisions made]
-
-## Next Steps
-[Bullet list of what should happen next, in priority order]
-
-## Critical Context
-[Any facts the agent MUST remember: file paths changed, errors seen, commands run]
-
-## Relevant Files
-[Bullet list of files that were read or edited: path — what was done]
-""".strip()
-
-async def compact_session_to_anchor(
-    history: list[dict],
-    llm_client,
-    existing_summary: str = "",
-) -> str:
-    """
-    Compact a long history into an Anchored Summary using a weak/fast LLM.
-
-    Research source: OpenCode's "Recursive Anchored Summary" algorithm.
-    - Uses a Markdown template to preserve: Goal, Constraints, Progress, Key Decisions
-    - When called recursively, feeds the old summary + new messages → updates in place
-    - Preserves the "Constraints" section to keep user rules alive after compaction
-    - The agent can "re-read" its goal even after a full context reset
-
-    Returns: compact Markdown summary (typically 500-1500 tokens).
-    """
-    # Serialize history for the summary prompt
-    history_text = "\n".join(
-        f"[{m.get('role','?')}]: {str(m.get('content',''))[:500]}"
-        for m in history[-40:]  # Use last 40 messages for summarization
-    )
-
-    if existing_summary:
-        # Recursive update: feed old summary + new messages
-        prompt = (
-            f"Below is the existing summary of this coding session:\n\n"
-            f"```\n{existing_summary}\n```\n\n"
-            f"New messages since that summary:\n\n{history_text}\n\n"
-            f"Update the anchored summary to reflect the new progress. "
-            f"Keep all sections. Mark completed items as done."
-        )
-    else:
-        prompt = (
-            f"Here is a coding session conversation:\n\n{history_text}\n\n"
-            f"Create an anchored summary following the template."
-        )
-
-    system = _ANCHORED_SUMMARY_TEMPLATE
-    try:
-        summary = await llm_client.complete_for_task(
-            "summarize",
-            prompt,
-            system=system,
-        )
-        log.info("Context compacted: %d history msgs → anchored summary (%d chars)",
-                 len(history), len(summary))
-        return summary
-    except Exception as e:
-        log.warning("Anchored summary compaction failed (%s), using simple truncation", e)
-        # Fallback: return last 5 messages as plain text
-        return "\n".join(
-            f"[{m.get('role','?')}]: {str(m.get('content',''))[:200]}"
-            for m in history[-5:]
-        )
+# ── Anchored Summary + @mention parsing — extracted to dedicated modules ──────
+# Imported here for backward compatibility (existing callers import from context_engine).
+from evocli_soul.context_summary import compact_session_to_anchor, _ANCHORED_SUMMARY_TEMPLATE  # noqa: F401
+from evocli_soul.context_mentions import parse_mentions as _parse_mentions_standalone  # noqa: F401
 
 
 class ContextEngine:
     def __init__(self, bridge):
         self.bridge = bridge
 
-    async def parse_mentions(self, goal: str) -> tuple[str, dict]:
-        """
-        Parse @ context provider mentions from user prompt.
-        研究来源: Continue.dev @terminal/@file/@problems/@docs 语法
-        支持: @file:<path>, @terminal, @problems
-
-        Returns: (cleaned_goal, injected_context_dict)
-        """
-        import re
-        injected: dict[str, str] = {}
-
-        # @file:<path> — inject file content
-        file_pattern = re.compile(r"@file:(\S+)")
-        for m in file_pattern.finditer(goal):
-            path = m.group(1)
-            try:
-                content = await self.bridge.call("fs.read", {"path": path})
-                if isinstance(content, str):
-                    injected[f"@file:{path}"] = f"## File: {path}\n```\n{content[:3000]}\n```"
-                    log.debug("@file provider: %s (%d chars)", path, len(content))
-            except Exception as e:
-                log.debug("@file: %s failed: %s", path, e)
-        goal = file_pattern.sub("", goal).strip()
-
-        # @terminal — inject recent shell output via run_and_capture
-        # Bug fix: was running `echo $EVOCLI_LAST_OUTPUT` which always fails on Windows
-        # Now: tells the LLM to use the run_and_capture tool to get terminal output
-        if "@terminal" in goal:
-            injected["@terminal"] = (
-                "## Terminal Context\n"
-                "To see terminal output, use the `run_and_capture` tool with the command you need to inspect. "
-                "Example: `run_and_capture('git status')` or `run_and_capture('cargo build 2>&1')`."
-            )
-            goal = goal.replace("@terminal", "").strip()
-
-        # @problems — inject current file diagnostics
-        if "@problems" in goal:
-            injected["@problems"] = "## Diagnostics\n[Use fs_lint_file tool to check for errors in specific files]"
-            goal = goal.replace("@problems", "").strip()
-
-        return goal, injected
+    async def parse_mentions(self, goal: str) -> "tuple[str, dict]":
+        """Delegate to context_mentions.parse_mentions (extracted module)."""
+        return await _parse_mentions_standalone(self.bridge, goal)
 
     async def build(self, params: dict) -> dict:
         # Compute budget constants lazily — not at module import time.
@@ -466,8 +346,9 @@ class ContextEngine:
         if _mc is not None and remaining > 0:
             await _progress("🧠 检索项目记忆…")
             try:
+                from evocli_soul.config_defaults import cfg_int as _cfg_int_mem
                 _all_memories = _mc.search(
-                    goal, top_k=15,
+                    goal, top_k=_cfg_int_mem("context.retrieval_top_k"),
                     current_project=project_id,
                     active_tools=active_tools or [],
                 )
@@ -693,19 +574,22 @@ class ContextEngine:
             slots.append({"name": "history", "tokens": used, "priority": "history"})
 
         # ── system_prompt 组装 ────────────────────────────────────
-        # Use build_system_prompt() as the base to ensure DO-NOW rules, SYSTEM_WORKFLOW,
-        # tool ordering, and failure recovery are present in ALL LLM paths (LiteLLM
-        # fallback uses ctx["system_prompt"] as its system message).
+        # Build with model_id/provider_id so per-model specialization and env block
+        # are included. context_engine receives these via params (passed from agent.py).
         try:
             from evocli_soul.default_prompts import build_system_prompt as _build_sp
+            _model_id   = params.get("model_id", "")
+            _provider   = params.get("provider_id", "")
             _base_prompt = _build_sp(
                 constraints=constraint_text or "",
                 goal=goal or "",
                 read_only=params.get("read_only", False),
                 compact=False,
+                model_id=_model_id,
+                provider_id=_provider,
+                inject_skills=False,  # skills injected once at init time, not per-turn
             )
         except Exception:
-            # Fallback: inline base so context_engine never hard-fails
             _base_prompt = "你是 EvoCLI，一个 AI 编程 Runtime 助手。"
             if constraint_text:
                 _base_prompt += f"\n\n## 项目约束（必须遵守）\n{constraint_text}"

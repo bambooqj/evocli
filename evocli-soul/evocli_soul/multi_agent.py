@@ -110,37 +110,58 @@ class WorkerPool:
         self._executor   = ParallelToolExecutor(bridge, max_workers)
         self._active: list[AgentTask] = []
 
-    async def submit_tasks(self, tasks: list[AgentTask]) -> list[AgentTask]:
-        """提交多个 Agent 任务，并行执行，返回完成的任务列表。"""
-        pool_bridge = self.bridge  # Capture in closure to avoid NameError in _run_task.
-                                    # 'bridge' is not in scope inside the nested function —
-                                    # must use 'self.bridge' or a captured local variable.
+    async def submit_tasks(
+        self,
+        tasks: list[AgentTask],
+        task_timeout_s: float = 180.0,
+    ) -> list[AgentTask]:
+        """Submit multiple agent tasks and run them in parallel under max_workers concurrency.
+
+        Args:
+            tasks:           List of AgentTask to execute.
+            task_timeout_s:  Per-task timeout in seconds (default 180s).
+                             Raised from 60s to 180s to accommodate tasks that may run
+                             tests, builds, or multi-step tool sequences (cargo test=120s,
+                             npm install, etc.). Set explicitly in tests for speed.
+                             Tasks exceeding this are marked status="failed".
+        """
+        pool_bridge = self.bridge
+
         async def _run_task(task: AgentTask) -> AgentTask:
             task.status = "running"
             try:
                 from evocli_soul import state as _state
                 from evocli_soul.agent import EvoCLIAgent
-                # Fix C3: 'memory' 未定义，改为通过 state 单例获取
-                is_read_only = not bool(task.tools_allowed)
-                agent_config = {"allowed_tools": task.tools_allowed or []}
+                # Normalize: task.tools (tool call targets) vs task.tools_allowed (permission list).
+                # Prefer tools_allowed for permission gating; fall back to task.tools for compatibility.
+                effective_tools = task.tools_allowed or task.tools or []
+                is_read_only    = not bool(effective_tools)
+                agent_config    = {"allowed_tools": effective_tools}
                 agent = EvoCLIAgent(
                     pool_bridge, _state.get_memory(), agent_config,
                     role=task.metadata.get("role", "worker"),
                     role_instructions=task.metadata.get("role_instructions", ""),
                     read_only=is_read_only,
                 )
-                result_text = await agent.run(task.task, context_params=task.context)
+                result_text = await asyncio.wait_for(
+                    agent.run(task.task, context_params=task.context),
+                    timeout=task_timeout_s,
+                )
                 task.result = {"text": result_text, "role": task.metadata.get("role", "worker")}
                 task.status = "done"
+            except asyncio.TimeoutError:
+                task.error  = f"Task timed out after {task_timeout_s:.0f}s"
+                task.status = "failed"
+                log.warning("Worker task %s timed out after %.0fs", task.id, task_timeout_s)
             except Exception as e:
                 task.error  = str(e)
                 task.status = "failed"
                 log.warning("Worker task %s failed: %s", task.id, e)
             return task
 
-        # 并发执行所有任务（受 max_workers 限制）
         sem = asyncio.Semaphore(self.max_workers)
-        async def _bounded(task):
+
+        async def _bounded(task: AgentTask) -> AgentTask:
             async with sem:
                 return await _run_task(task)
 

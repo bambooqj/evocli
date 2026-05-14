@@ -23,13 +23,17 @@ class HostBridge:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
-    async def call(self, tool: str, args: dict[str, Any], timeout: float = 30.0) -> Any:
+    async def call(self, tool: str, args: dict[str, Any], timeout: float = 0.0) -> Any:
         """
         向 Rust Host 发起工具调用请求，等待响应。
-
-        发出格式：{"id": "uuid", "method": "tool.call", "params": {"tool": "fs.read", "args": {...}}}
-        对应 soul_bridge.rs 的 ToolCallRequest 处理路径。
+        timeout=0 表示使用 config_defaults["system.bridge_timeout_s"]。
         """
+        if timeout <= 0:
+            try:
+                from evocli_soul.config_defaults import cfg_float
+                timeout = cfg_float("system.bridge_timeout_s")
+            except Exception:
+                timeout = 30.0
         req_id = str(uuid.uuid4())
         request = {
             "id":     req_id,

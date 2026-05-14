@@ -13,64 +13,273 @@ def normalize_project_id(project_id: str | None) -> str:
     lookups, code-index keying, and context injection always use the same key.
 
     Mapping rules:
-    - None / "" / "." / "global" → os.getcwd() (current project)
+    - None / "" / "." / "global" → SESSION_PROJECT_ROOT (frozen at startup)
     - relative path → os.path.abspath(path)
     - absolute path → as-is (normalized separators)
     """
     if not project_id or project_id in (".", "global", ""):
-        return os.path.abspath(os.getcwd())
+        return get_session_root()  # Use frozen root — not live os.getcwd()
     return os.path.abspath(project_id)
 
+
+# ── Session project root (frozen at startup) ─────────────────────────────
+# Set ONCE by main.py before any other initialization.
+# All callers must use get_session_root() instead of os.getcwd() to prevent
+# directory drift when shell commands or tool calls change the working directory.
+#
+# Continue.dev pattern: workspaceFolders[0].fsPath captured at session init,
+# passed as invariant cwd to every tool call.
+_session_project_root: str = ""
+
+
+def set_session_root(path: str) -> None:
+    """Freeze the session project root. Call ONCE at process startup.
+
+    Must be called before any state initialization (memory, agent, etc.)
+    so that normalize_project_id() and get_session_root() return the correct value.
+    """
+    global _session_project_root
+    import pathlib as _pl
+    _session_project_root = str(_pl.Path(path).resolve())
+
+
+def get_session_root() -> str:
+    """Return the frozen session project root.
+
+    Always use this instead of os.getcwd() to prevent directory drift.
+    If set_session_root() was not yet called (should not happen in normal flow),
+    falls back to the current CWD with a warning.
+    """
+    if _session_project_root:
+        return _session_project_root
+    import logging as _log
+    _log.getLogger("evocli.state").warning(
+        "get_session_root() called before set_session_root() — "
+        "falling back to os.getcwd(). Call set_session_root() at startup."
+    )
+    return os.path.abspath(os.getcwd())
+
 _bridge: Optional[object]       = None
-# _memory 改为字典单例，按 project_id 隔离
-# 旧代码中 _memory 是进程级唯一实例，首次绑定后不可更换。
-# 多项目并行时（evocli 在项目 A 启动后切换到 B），
-# 所有写入都会被标记 A 的 project_id，导致向量索引分类错乱。
 _memories: dict[str, object]    = {}   # project_id → EvoCLIMemory
 _skill_engine: Optional[object] = None
 _llm_client: Optional[object]   = None
 _agent: Optional[object]        = None
 _orchestrator: Optional[object] = None
-_config: Optional[dict]         = None  # Cached config from ~/.evocli/config.toml
-_active_subagents: dict[str, object] = {}  # session_id -> SubAgentSession
+_config: Optional[dict]         = None
+_active_subagents: dict[str, object] = {}
+
+# ── Session LRU cache — prevents unbounded memory growth ─────────────────────
+# All session-keyed dicts use _LRUSessionCache to automatically evict the
+# oldest sessions when the process runs for a long time.
+# Default capacity = 100 sessions. Override via config: [system] max_sessions = N
+
+class _LRUSessionCache(dict):
+    """
+    A dict subclass that evicts the oldest entry when capacity is exceeded.
+    Drop-in replacement for `dict` for session_id-keyed state.
+    Thread-safe: GIL protects dict operations in CPython.
+    """
+    def __init__(self, maxsize: int = 100):
+        super().__init__()
+        self._maxsize = maxsize
+        self._order: list = []  # insertion order for LRU eviction
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self._order.remove(key)
+        elif len(self) >= self._maxsize:
+            # Evict oldest entry
+            oldest = self._order.pop(0)
+            super().__delitem__(oldest)
+        self._order.append(key)
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        if key in self._order:
+            self._order.remove(key)
+        super().__delitem__(key)
+
+    def pop(self, key, *args):
+        if key in self._order:
+            self._order.remove(key)
+        return super().pop(key, *args)
+
+
+def _make_session_cache() -> _LRUSessionCache:
+    """Create a session cache with capacity from config (default 100)."""
+    try:
+        from evocli_soul.config_defaults import cfg_int
+        cap = cfg_int("system.max_sessions") or 100
+    except Exception:
+        cap = 100
+    return _LRUSessionCache(maxsize=cap)
+
+
+# ── Todo list (keyed by session_id) — OpenCode TodoWrite pattern ─────────────
+_todos: _LRUSessionCache = _make_session_cache()
+
+
+def set_todos(todos: list[dict], session_id: str = "default") -> None:
+    _todos[session_id] = todos
+
+
+def get_todos(session_id: str = "default") -> list[dict]:
+    return list(_todos.get(session_id, []))
+
+
+def update_todo_status(todo_id: str, status: str, session_id: str = "default") -> bool:
+    todos = _todos.get(session_id, [])
+    for item in todos:
+        if item.get("id") == todo_id:
+            item["status"] = status
+            return True
+    return False
+
+
+# ── Last terminal output (for @terminal mention) ─────────────────────────────
+_terminal_output: str = ""  # last N lines of terminal output
+
+
+def set_terminal_output(output: str) -> None:
+    """Store the most recent terminal output (for @terminal mention context)."""
+    global _terminal_output
+    # Keep last 200 lines to avoid bloating context
+    lines = output.splitlines()
+    _terminal_output = "\n".join(lines[-200:])
+
+
+def get_terminal_output() -> str:
+    """Return the most recent terminal output."""
+    return _terminal_output
+
+# ── Circuit breaker — Cline consecutiveMistakeCount pattern ─────────────────
+# Tracks consecutive tool errors within a single _run_litellm turn.
+# When count reaches threshold → inject "stop and report" message to prevent
+# the AI from looping endlessly on a broken tool.
+#
+# Separate from _consecutive_no_tools (which tracks text-only turns at the loop level).
+# This tracks individual tool failures within one LLM call cycle.
+_tool_failure_counts: _LRUSessionCache = _make_session_cache()  # session_id → consecutive failure count
+_CIRCUIT_BREAKER_THRESHOLD = 3  # configurable via config [agent] max_consecutive_failures
+
+
+def increment_tool_failure(session_id: str) -> int:
+    """Increment consecutive tool failure count. Returns new count."""
+    _tool_failure_counts[session_id] = _tool_failure_counts.get(session_id, 0) + 1
+    return _tool_failure_counts[session_id]
+
+
+def reset_tool_failure(session_id: str) -> None:
+    """Reset failure count on successful tool call."""
+    _tool_failure_counts.pop(session_id, None)
+
+
+def get_tool_failure_count(session_id: str) -> int:
+    """Return current consecutive failure count."""
+    return _tool_failure_counts.get(session_id, 0)
+
+
+# ── task_complete signal (Cline attempt_completion / Gemini complete_task pattern) ──
+# The AI calls task_complete tool to signal it believes the task is done.
+# The autonomous loop in handlers/agent.py polls this to decide when to stop.
+#
+# Design:
+#   - set_task_complete()   → called by task_complete tool in agent.py
+#   - get_task_complete()   → polled by autonomous loop each iteration
+#   - clear_task_complete() → called at start of each new request + after loop exits
+#   - _task_double_checked  → Cline's "double-check" pattern: first attempt_completion
+#                             is rejected with a re-verify prompt; only second passes
+_task_complete: _LRUSessionCache = _make_session_cache()       # session_id → {result, command, ts}
+_task_double_checked: _LRUSessionCache = _make_session_cache() # session_id → True once re-verified
+# Per-iteration tool-call counter (reset each autonomous loop iteration)
+_iteration_tool_counts: _LRUSessionCache = _make_session_cache()  # session_id → count
+
+
+def set_task_complete(session_id: str, result: str, command: str = "") -> None:
+    """Signal that the AI believes the task is done."""
+    import time as _time
+    _task_complete[session_id] = {
+        "result":  result,
+        "command": command,
+        "ts":      _time.time(),
+    }
+
+
+def get_task_complete(session_id: str) -> "dict | None":
+    """Return the task_complete signal if set, else None."""
+    return _task_complete.get(session_id)
+
+
+def clear_task_complete(session_id: str) -> None:
+    """Clear the task_complete signal and double-check state for a new request."""
+    _task_complete.pop(session_id, None)
+    _task_double_checked.pop(session_id, None)
+    _iteration_tool_counts.pop(session_id, None)
+
+
+def is_task_double_checked(session_id: str) -> bool:
+    """Return True if the AI already did the Cline double-check re-verify step."""
+    return _task_double_checked.get(session_id, False)
+
+
+def mark_task_double_checked(session_id: str) -> None:
+    """Mark that the AI has re-verified its work (allows next task_complete to pass)."""
+    _task_double_checked[session_id] = True
+
+
+def increment_iteration_tool_count(session_id: str) -> int:
+    """Increment tool call counter for current iteration. Returns new count."""
+    _iteration_tool_counts[session_id] = _iteration_tool_counts.get(session_id, 0) + 1
+    return _iteration_tool_counts[session_id]
+
+
+def reset_iteration_tool_count(session_id: str) -> None:
+    """Reset tool call counter at the start of each autonomous loop iteration."""
+    _iteration_tool_counts[session_id] = 0
+
+
+def get_iteration_tool_count(session_id: str) -> int:
+    """Return how many tools were called in the current iteration."""
+    return _iteration_tool_counts.get(session_id, 0)
+
 
 # GAP-3: Per-session event accumulator for memory distillation.
-# Events are appended during tool execution and drained at session end.
-# Thread-safe: GIL protects list.append() and list.clear() in CPython.
-_session_events: list[dict] = []
+# FIXED: was a global list shared across all sessions — caused concurrent session corruption.
+# Now keyed by session_id so each session accumulates its own events.
+_session_events: _LRUSessionCache = _make_session_cache()  # session_id → [event, ...]
 
 # ── Multi-turn conversation history (keyed by session_id) ──────────────────
 # Implements Aider/Claude Code pattern: persist history server-side so Rust TUI
 # doesn't need to send it back. Each entry: {"role": "user"|"assistant", "content": str}
 # Tool messages are NOT stored (they bloat history without adding recall value).
 # Key: session_id (str); Value: list of message dicts
-_conversation_histories: dict[str, list[dict]] = {}
+_conversation_histories: _LRUSessionCache = _make_session_cache()
 
 # ── Session-level context cache (keyed by session_id) ─────────────────────
 # Caches expensive computation (RepoMap, memory search results) across turns.
 # Invalidated when goal fingerprint OR current file hash changes.
 # Keys per session: "goal_fingerprint", "current_file_hash", "repomap_text",
 #                   "memory_results", "turn"
-_context_caches: dict[str, dict] = {}
+_context_caches: _LRUSessionCache = _make_session_cache()
 
 # ── Anchored summary store (keyed by session_id) ──────────────────────────
 # When history grows too large, it gets compressed to an Anchored Summary.
 # The summary is injected at the front of the next LLM conversation.
-_anchored_summaries: dict[str, str] = {}
+_anchored_summaries: _LRUSessionCache = _make_session_cache()
 
 # ── File read tracker (keyed by session_id) ───────────────────────────────
 # Cline pattern: if a file is read multiple times in a session, annotate
 # subsequent reads with "also read in turn N" to reduce redundant large content.
 # Keys: path → turn_number of first read
-_files_read: dict[str, dict[str, int]] = {}  # session_id -> {path: turn}
+_files_read: _LRUSessionCache = _make_session_cache()  # session_id -> {path: turn}
 
 # ── Current turn counter (keyed by session_id) ────────────────────────────
-_current_turns: dict[str, int] = {}  # session_id -> turn_number
+_current_turns: _LRUSessionCache = _make_session_cache()  # session_id -> turn_number
 
 # ── Explicitly added files (keyed by session_id) ──────────────────────────
 # Aider /add pattern: files pinned by user persist for the whole session.
 # They're injected into every turn's context automatically.
-_added_files: dict[str, list[str]] = {}  # session_id → [path, ...]
+_added_files: _LRUSessionCache = _make_session_cache()  # session_id → [path, ...]
 
 _init_lock = threading.Lock()
 
@@ -296,9 +505,14 @@ def record_file_read(path: str, session_id: str = "default") -> int:
     return 2  # already read in a prior turn
 
 
-def get_file_first_read_turn(path: str, session_id: str = "default") -> Optional[int]:
+def get_file_first_read_turn(path: str, session_id: str = "default") -> "Optional[int]":
     """Return the turn number when path was first read, or None."""
     return _files_read.get(session_id, {}).get(path)
+
+
+def get_files_read_this_session(session_id: str = "default") -> set:
+    """Return the set of file paths read in this session (for env details injection)."""
+    return set(_files_read.get(session_id, {}).keys())
 
 
 # ── Turn counter API ──────────────────────────────────────────────────────
@@ -315,22 +529,62 @@ def get_current_turn(session_id: str = "default") -> int:
 
 # ── Session event buffer (GAP-3: memory distillation) ─────────────────────
 
-def append_session_event(event: dict) -> None:
-    """Append a tool/action event to the current session's event buffer.
+# ── Gemini-style tool scratchpad ─────────────────────────────────────────────
+# Tracks the sequence of tools called in a session as a compact breadcrumb trail.
+# Injected into environment_details per turn so AI knows "what was already tried".
+# Format: "tool1 → tool2 | tool3 → tool4" (pipes = iteration boundaries)
+_tool_scratchpads: _LRUSessionCache = _make_session_cache()  # session_id → [[turn_tools], ...]
+
+
+def record_tool_in_scratchpad(tool_name: str, session_id: str = "default") -> None:
+    """Append a tool call to the current iteration's scratchpad."""
+    if session_id not in _tool_scratchpads:
+        _tool_scratchpads[session_id] = [[]]
+    if not _tool_scratchpads[session_id]:
+        _tool_scratchpads[session_id].append([])
+    # Compact: extract base name only (shell_run("cargo test") → "shell_run")
+    _tool_scratchpads[session_id][-1].append(tool_name)
+
+
+def new_scratchpad_iteration(session_id: str = "default") -> None:
+    """Start a new iteration boundary in the scratchpad."""
+    if session_id not in _tool_scratchpads:
+        _tool_scratchpads[session_id] = [[]]
+    else:
+        _tool_scratchpads[session_id].append([])
+
+
+def get_scratchpad_summary(session_id: str = "default", max_iters: int = 5) -> str:
+    """Return compact breadcrumb: 'fs_read → fs_write | test_and_capture → task_complete'"""
+    pads = _tool_scratchpads.get(session_id, [])
+    if not pads:
+        return ""
+    # Show last max_iters iterations
+    recent = pads[-max_iters:]
+    iter_strs = [" → ".join(t for t in itr if t) for itr in recent if itr]
+    return " | ".join(iter_strs)
+
+
+def append_session_event(event: dict, session_id: str = "default") -> None:
+    """Append a tool/action event to a session's event buffer.
 
     Called from _execute_tool() and Python-native tool closures in agent.py.
     The accumulated events are consumed by MemoryDistiller at session end (GAP-3).
+    Each session has its own buffer — concurrent sessions are isolated.
     """
-    _session_events.append(event)
+    if session_id not in _session_events:
+        _session_events[session_id] = []
+    _session_events[session_id].append(event)
 
 
-def drain_session_events() -> list[dict]:
+def drain_session_events(session_id: str = "default") -> list[dict]:
     """Return all accumulated session events and clear the buffer.
 
     Called once per session end by _distill_session() in handlers/agent.py.
+    Only drains the specified session's events — other sessions unaffected.
     """
-    events = list(_session_events)
-    _session_events.clear()
+    events = list(_session_events.get(session_id, []))
+    _session_events.pop(session_id, None)
     return events
 
 
