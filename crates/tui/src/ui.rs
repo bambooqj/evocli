@@ -11,7 +11,7 @@
 //!
 //! 响应式布局：Wide(≥120) / Normal(60-119) / Compact(40-59) / Tiny(<40)
 
-use crate::app::{App, AppState, ChatMessage, StepStatus};
+use crate::app::{App, AppState, ApproveMode, ChatMessage, ContextKind, StepStatus, WorkPanelTab};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -155,7 +155,9 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DRAW ENTRY
+// DRAW ENTRY — 3-zone layout: Title | [Chat+WorkPanel] | [Activity] | Input | Footer
+// Wide(≥120): Chat(65%) + WorkPanel(35%)
+// Normal/Compact: Single column
 // ═══════════════════════════════════════════════════════════════════════════════
 pub fn draw(f: &mut Frame, app: &mut App, textarea: &TextArea<'_>) {
     let area = f.area();
@@ -166,60 +168,79 @@ pub fn draw(f: &mut Frame, app: &mut App, textarea: &TextArea<'_>) {
     }
     let input_h = input_area_height(area.height, textarea.lines().len());
     let has_notif = app.notification.is_some();
-    let notif_row = if has_notif {
-        Constraint::Length(1)
-    } else {
-        Constraint::Length(0)
-    };
+    let notif_row = if has_notif { Constraint::Length(1) } else { Constraint::Length(0) };
+    // Activity strip: always 1 line (never flickers between 0/1)
+    // Shows mode info even when idle to prevent layout shift
+    let activity_h = 1u16;
 
-    let constraints = if app.is_skill_running() {
-        vec![
-            Constraint::Length(2),
-            Constraint::Min(6),
-            Constraint::Length(3),
-            notif_row,
-            Constraint::Length(input_h),
-            Constraint::Length(1),
-        ]
-    } else {
-        vec![
-            Constraint::Length(2),
-            Constraint::Min(6),
-            notif_row,
-            Constraint::Length(input_h),
-            Constraint::Length(1),
-        ]
-    };
-    let chunks = Layout::default()
+    // ── Outer vertical split ─────────────────────────────────────
+    //  Row 0: Title bar (2)
+    //  Row 1: Main content area (flex) — further split below
+    //  Row 2: Activity strip (1)
+    //  Row 3: Notification (0 or 1)
+    //  Row 4: Input area (dynamic)
+    //  Row 5: Footer / Status bar (1)
+    let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints(vec![
+            Constraint::Length(2),
+            Constraint::Min(4),
+            Constraint::Length(activity_h),
+            notif_row,
+            Constraint::Length(input_h),
+            Constraint::Length(1),
+        ])
         .split(area);
 
-    if app.is_skill_running() {
-        draw_title_bar(f, app, chunks[0], mode);
-        draw_chat_area(f, app, chunks[1], mode);
-        draw_skill_panel(f, app, chunks[2]);
-        if has_notif {
-            draw_notification_bar(f, app, chunks[3]);
-        }
-        draw_input_area(f, textarea, chunks[4]);
-        draw_status_bar(f, app, chunks[5], mode);
-    } else {
-        draw_title_bar(f, app, chunks[0], mode);
-        draw_chat_area(f, app, chunks[1], mode);
-        if has_notif {
-            draw_notification_bar(f, app, chunks[2]);
-        }
-        draw_input_area(f, textarea, chunks[3]);
-        draw_status_bar(f, app, chunks[4], mode);
-    }
-    if app.show_suggestions && !app.suggestions.is_empty() {
-        let ia = if app.is_skill_running() {
-            chunks[4]
+    draw_title_bar(f, app, outer[0], mode);
+
+    // ── Main content: optionally split into chat + work panel ─────
+    let show_panel = matches!(mode, LayoutMode::Wide) && app.work_panel_visible;
+    if show_panel {
+        let main_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Percentage(65),
+                Constraint::Percentage(35),
+            ])
+            .split(outer[1]);
+
+        // Chat on the left, skill panel inline if skill running
+        if app.is_skill_running() {
+            let left_v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Min(4), Constraint::Length(3)])
+                .split(main_split[0]);
+            draw_chat_area(f, app, left_v[0], mode);
+            draw_skill_panel(f, app, left_v[1]);
         } else {
-            chunks[3]
-        };
-        draw_suggestions_popup(f, app, ia);
+            draw_chat_area(f, app, main_split[0], mode);
+        }
+        draw_work_panel(f, app, main_split[1]);
+    } else {
+        // Single column — skill panel below chat if running
+        if app.is_skill_running() {
+            let main_v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Min(4), Constraint::Length(3)])
+                .split(outer[1]);
+            draw_chat_area(f, app, main_v[0], mode);
+            draw_skill_panel(f, app, main_v[1]);
+        } else {
+            draw_chat_area(f, app, outer[1], mode);
+        }
+    }
+
+    draw_activity_strip(f, app, outer[2]);
+    if has_notif {
+        draw_notification_bar(f, app, outer[3]);
+    }
+    draw_input_area(f, textarea, outer[4]);
+    draw_status_bar(f, app, outer[5], mode);
+
+    // ── Overlays ──────────────────────────────────────────────────
+    if app.show_suggestions && !app.suggestions.is_empty() {
+        draw_suggestions_popup(f, app, outer[4]);
     }
     if let AppState::WaitingApproval { ref message } = app.state {
         draw_approval_modal(f, message);
@@ -231,7 +252,6 @@ pub fn draw(f: &mut Frame, app: &mut App, textarea: &TextArea<'_>) {
         draw_debug_overlay(f, app);
     }
 }
-
 // ── Tiny mode ─────────────────────────────────────────────────────────────────
 fn draw_tiny_mode(f: &mut Frame, app: &App, area: Rect) {
     let s = match &app.state {
@@ -648,12 +668,20 @@ fn draw_chat_area(f: &mut Frame, app: &mut App, area: Rect, mode: LayoutMode) {
     if thinking && at_bottom {
         let spin = spinner_frame(app.spinner_tick);
         let model_s: String = app.model_name.chars().take(18).collect();
+        // Show thinking_label from soul_status events if available
+        let label_part = if !app.thinking_label.is_empty() {
+            let tl: String = app.thinking_label.chars().take(40).collect();
+            format!("  {tl}")
+        } else {
+            String::new()
+        };
         render.push(Line::from(vec![
             Span::styled(
                 "  ◆ ",
                 Style::default().fg(AI_ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::styled(model_s, Style::default().fg(AI_ACCENT)),
+            Span::styled(label_part, Style::default().fg(FG_SUBTEXT)),
             Span::styled(format!("  {spin}"), Style::default().fg(C_PURPLE)),
         ]));
     }
@@ -703,22 +731,33 @@ fn draw_chat_area(f: &mut Frame, app: &mut App, area: Rect, mode: LayoutMode) {
         f.render_stateful_widget(sb, sb_area, &mut sb_state);
     }
 
-    // ── Thinking overlay when scrolled up ────────────────────────────────────
-    if (thinking || streaming) && !at_bottom {
-        let spin = spinner_frame(app.spinner_tick);
-        let label = format!(" {spin} Thinking… ");
-        let lw = label.chars().count() as u16;
-        if area.width > lw + 2 {
-            let overlay = Rect {
-                x: area.right().saturating_sub(lw + 2),
-                y: area.top() + 1,
-                width: lw,
-                height: 1,
-            };
-            f.render_widget(
-                Paragraph::new(label).style(Style::default().fg(C_PURPLE).bg(BG_SURFACE)),
-                overlay,
-            );
+    // ── Scroll-up overlay: "↓ working" / "↓ scroll to bottom" ───────────────
+    // When scrolled up and AI is active: show pulsing indicator + how to jump back.
+    // When scrolled up and idle: show "↓ End" hint so users know there's more below.
+    if !at_bottom {
+        let overlay_text = if thinking || streaming {
+            let spin = spinner_frame(app.spinner_tick);
+            format!(" {spin} \u{2193} working  End:\u{2193}\u{2193} ")
+        } else if max_scroll > 0 {
+            " \u{2193} scroll  End:bottom ".to_string()
+        } else {
+            String::new()
+        };
+        if !overlay_text.is_empty() {
+            let lw = overlay_text.chars().count() as u16;
+            let color = if thinking || streaming { C_PURPLE } else { FG_DIM };
+            if area.width > lw + 2 {
+                let overlay = Rect {
+                    x: area.right().saturating_sub(lw + 2),
+                    y: area.bottom().saturating_sub(2),
+                    width: lw,
+                    height: 1,
+                };
+                f.render_widget(
+                    Paragraph::new(overlay_text).style(Style::default().fg(color).bg(BG_SURFACE)),
+                    overlay,
+                );
+            }
         }
     }
 }
@@ -1328,6 +1367,229 @@ fn draw_skill_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// WORK PANEL — right sidebar (wide mode only)
+// Two tabs: Tools (timeline) | Context (files + memory)
+// ═══════════════════════════════════════════════════════════════════════════════
+fn draw_work_panel(f: &mut Frame, app: &App, area: Rect) {
+    if area.width < 20 {
+        return;
+    }
+
+    // Split into tab bar (1) + content (rest)
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Length(1), Constraint::Min(2)])
+        .split(area);
+
+    // ── Tab bar ──────────────────────────────────────────────────
+    let tools_label = format!(
+        " {} Tools({}) ",
+        if app.work_panel_tab == WorkPanelTab::Tools { "▶" } else { " " },
+        app.tool_history.len()
+    );
+    let ctx_label = format!(
+        " {}Context({}) ",
+        if app.work_panel_tab == WorkPanelTab::Context { "▶" } else { " " },
+        app.context_items.len()
+    );
+    let tab_line = Line::from(vec![
+        Span::styled(
+            tools_label,
+            if app.work_panel_tab == WorkPanelTab::Tools {
+                Style::default().fg(USER_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG_DIM)
+            },
+        ),
+        Span::styled("│", Style::default().fg(FG_BORDER)),
+        Span::styled(
+            ctx_label,
+            if app.work_panel_tab == WorkPanelTab::Context {
+                Style::default().fg(USER_ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG_DIM)
+            },
+        ),
+        Span::styled(
+            "  Ctrl+W:switch",
+            Style::default().fg(FG_DIM),
+        ),
+    ]);
+    f.render_widget(
+        Paragraph::new(tab_line).style(Style::default().bg(BG_SURFACE)),
+        inner[0],
+    );
+
+    // ── Content ───────────────────────────────────────────────────
+    let content_area = inner[1];
+    let inner_w = content_area.width.saturating_sub(2) as usize;
+
+    match app.work_panel_tab {
+        WorkPanelTab::Tools => draw_work_tools(f, app, content_area, inner_w),
+        WorkPanelTab::Context => draw_work_context(f, app, content_area, inner_w),
+    }
+}
+
+fn draw_work_tools(f: &mut Frame, app: &App, area: Rect, inner_w: usize) {
+    let visible_h = area.height.saturating_sub(2) as usize;
+
+    // Group tool history by turn, show most recent turns first
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current_turn = usize::MAX;
+
+    // Collect in reverse so we see newest first
+    for entry in app.tool_history.iter().rev() {
+        // Turn header
+        if entry.turn != current_turn {
+            current_turn = entry.turn;
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                format!("  turn {}", entry.turn + 1),
+                Style::default().fg(FG_DIM),
+            )));
+        }
+
+        let (icon, icon_color) = match entry.ok {
+            None => ("\u{21bb} ", C_ORANGE),    // ↻ in-flight
+            Some(true) => ("\u{2713} ", C_GREEN), // ✓ success
+            Some(false) => ("\u{2717} ", C_RED),  // ✗ failed
+        };
+        let dur = if entry.duration_ms > 0 {
+            let s: String = format!("  {}ms", entry.duration_ms)
+                .chars()
+                .take(8)
+                .collect();
+            s
+        } else if entry.ok.is_none() {
+            // Live elapsed for in-flight tools
+            let ms = entry.start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+            format!("  {}ms", ms).chars().take(8).collect()
+        } else {
+            String::new()
+        };
+
+        let max_disp = inner_w.saturating_sub(12);
+        let disp: String = entry.display.chars().take(max_disp).collect();
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {icon}"), Style::default().fg(icon_color)),
+            Span::styled(disp, Style::default().fg(FG_SUBTEXT)),
+            Span::styled(dur, Style::default().fg(FG_DIM)),
+        ]));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No tools used yet",
+            Style::default().fg(FG_DIM),
+        )));
+    }
+
+    // Scroll: show from top (newest items shown first via rev iteration)
+    let skip = app.work_panel_scroll.min(lines.len().saturating_sub(visible_h));
+    let visible: Vec<Line> = lines.into_iter().skip(skip).take(visible_h + 2).collect();
+
+    f.render_widget(
+        Paragraph::new(visible)
+            .block(
+                Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(FG_BORDER))
+                    .style(Style::default().bg(BG_BASE)),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_work_context(f: &mut Frame, app: &App, area: Rect, inner_w: usize) {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Context window fill
+    if app.current_ctx_tokens > 0 && app.max_context_tokens > 0 {
+        let pct = (app.current_ctx_tokens * 100 / app.max_context_tokens).min(100);
+        let fill = (app.current_ctx_tokens * 10 / app.max_context_tokens).min(10);
+        let bar = format!("[{}{}]", "\u{2588}".repeat(fill), "\u{2591}".repeat(10 - fill));
+        let color = if pct >= 95 { C_RED } else if pct >= 80 { C_YELLOW } else { C_TEAL };
+        lines.push(Line::from(vec![
+            Span::styled("  CTX ", Style::default().fg(FG_DIM)),
+            Span::styled(bar, Style::default().fg(color)),
+            Span::styled(
+                format!(" {}%", pct),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("      \u{2191}{} / {}", fmt_tokens(app.current_ctx_tokens), fmt_tokens(app.max_context_tokens)),
+            Style::default().fg(FG_DIM),
+        )));
+        if app.session_cost_usd > 0.0001 {
+            lines.push(Line::from(Span::styled(
+                format!("      ${:.4} session", app.session_cost_usd),
+                Style::default().fg(FG_DIM),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Context items (files, memory, skills)
+    if !app.context_items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  \u{25b6} Loaded",
+            Style::default().fg(FG_SUBTEXT).add_modifier(Modifier::BOLD),
+        )));
+        for item in &app.context_items {
+            let (icon, color) = match item.kind {
+                ContextKind::File => ("\u{1f4c4} ", USER_ACCENT),   // 📄
+                ContextKind::Memory => ("\u{1f9e0} ", C_PURPLE),    // 🧠
+                ContextKind::Skill => ("\u{26a1} ", C_YELLOW),      // ⚡
+            };
+            let max_l = inner_w.saturating_sub(6);
+            let label: String = item.label.chars().take(max_l).collect();
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {icon}"), Style::default().fg(color)),
+                Span::styled(label, Style::default().fg(FG_SUBTEXT)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  No context loaded",
+            Style::default().fg(FG_DIM),
+        )));
+    }
+
+    // Session stats
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  \u{25b6} Session",
+        Style::default().fg(FG_SUBTEXT).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  {} turns  {} tools", app.turn_count, app.tool_history.len()),
+        Style::default().fg(FG_DIM),
+    )));
+    if app.tokens_output > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  \u{2191}{}  \u{2193}{}", fmt_tokens(app.tokens_input), fmt_tokens(app.tokens_output)),
+            Style::default().fg(FG_DIM),
+        )));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(FG_BORDER))
+                    .style(Style::default().bg(BG_BASE)),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // APPROVAL MODAL
 // ═══════════════════════════════════════════════════════════════════════════════
 fn draw_approval_modal(f: &mut Frame, message: &str) {
@@ -1670,6 +1932,90 @@ fn draw_input_area(f: &mut Frame, textarea: &TextArea<'_>, area: Rect) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ACTIVITY STRIP — 1-line real-time status between chat and input
+// ═══════════════════════════════════════════════════════════════════════════════
+fn draw_activity_strip(f: &mut Frame, app: &App, area: Rect) {
+    let spin = spinner_frame(app.spinner_tick);
+    let elapsed = app.request_start.map(|t| t.elapsed()).unwrap_or_default();
+    let elapsed_s = elapsed.as_secs();
+    let elapsed_ms = elapsed.as_millis();
+
+    let line = match &app.state {
+        AppState::Thinking => {
+            let label = if !app.thinking_label.is_empty() {
+                app.thinking_label.chars().take(48).collect::<String>()
+            } else {
+                "Thinking\u{2026}".to_string()
+            };
+            let elapsed_part = if elapsed_s >= 1 { format!("  {}s", elapsed_s) } else { String::new() };
+            Line::from(vec![
+                Span::styled("  \u{25c6} ", Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD)),
+                Span::styled(label, Style::default().fg(C_PURPLE)),
+                Span::styled(format!("  {spin}"), Style::default().fg(C_PURPLE)),
+                Span::styled(elapsed_part, Style::default().fg(FG_DIM)),
+            ])
+        }
+        AppState::CallingTool { display, .. } => {
+            let tool_ms = app.tool_start.map(|t| t.elapsed().as_millis()).unwrap_or(elapsed_ms);
+            let elapsed_part = if tool_ms >= 100 { format!("  {}ms", tool_ms) } else { String::new() };
+            let max_d = (area.width as usize).saturating_sub(20);
+            let d: String = display.chars().take(max_d).collect();
+            Line::from(vec![
+                Span::styled("  \u{2699} ", Style::default().fg(C_ORANGE).add_modifier(Modifier::BOLD)),
+                Span::styled(d, Style::default().fg(C_ORANGE)),
+                Span::styled(format!("  {spin}"), Style::default().fg(C_ORANGE)),
+                Span::styled(elapsed_part, Style::default().fg(FG_DIM)),
+            ])
+        }
+        AppState::Streaming { .. } => {
+            let tok_s = if app.live_tokens > 0 {
+                let rate_part = if elapsed_s > 0 {
+                    format!("  {}tok/s", app.live_tokens as u64 / elapsed_s.max(1))
+                } else {
+                    String::new()
+                };
+                format!("  {}tok{}", app.live_tokens, rate_part)
+            } else {
+                String::new()
+            };
+            let elapsed_part = if elapsed_s >= 1 { format!("  {}s", elapsed_s) } else { String::new() };
+            Line::from(vec![
+                Span::styled("  \u{25c6} ", Style::default().fg(AI_ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled("Streaming", Style::default().fg(AI_ACCENT)),
+                Span::styled(tok_s, Style::default().fg(C_TEAL)),
+                Span::styled(elapsed_part, Style::default().fg(FG_DIM)),
+            ])
+        }
+        _ => {
+            // Idle: show mini context bar as ambient awareness
+            if app.current_ctx_tokens > 0 && app.max_context_tokens > 0 {
+                let pct = (app.current_ctx_tokens * 100 / app.max_context_tokens).min(100);
+                let fill = (app.current_ctx_tokens * 8 / app.max_context_tokens).min(8);
+                let bar = format!("[{}{}]", "\u{2588}".repeat(fill), "\u{2591}".repeat(8 - fill));
+                let color = if pct >= 95 { C_RED } else if pct >= 80 { C_YELLOW } else { FG_DIM };
+                Line::from(vec![
+                    Span::styled("  ctx ", Style::default().fg(FG_DIM)),
+                    Span::styled(bar, Style::default().fg(color)),
+                    Span::styled(
+                        format!(" {}%  \u{2191}{} / {}", pct,
+                            fmt_tokens(app.current_ctx_tokens),
+                            fmt_tokens(app.max_context_tokens)),
+                        Style::default().fg(FG_DIM),
+                    ),
+                ])
+            } else {
+                Line::from("")
+            }
+        }
+    };
+
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(BG_SURFACE)),
+        area,
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // STATUS BAR — clean, keys bright / labels dim
 // ═══════════════════════════════════════════════════════════════════════════════
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
@@ -1678,7 +2024,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
         .request_start
         .map(|t| t.elapsed().as_secs())
         .unwrap_or(0);
-    let elapsed_hint = if elapsed_secs >= 5 {
+    let elapsed_hint = if elapsed_secs >= 1 {
         format!("  {}s", elapsed_secs)
     } else {
         String::new()
@@ -1777,6 +2123,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
         ]
     };
 
+    // Mode indicator — always visible, right-aligned (Gemini CLI pattern)
+    let mode_label = app.approve_mode.label();
+    let (mode_color, mode_bg) = match app.approve_mode {
+        ApproveMode::Auto => (BG_BASE, C_GREEN),
+        ApproveMode::Manual => (BG_BASE, C_YELLOW),
+        ApproveMode::Plan => (BG_BASE, C_PURPLE),
+    };
+
     let mut spans = vec![
         Span::styled(format!(" {spin} "), Style::default().fg(status_color)),
         Span::styled(format!("{sd}{ell}"), Style::default().fg(status_color)),
@@ -1797,17 +2151,31 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, mode: LayoutMode) {
             spans.extend(kb("^C", ":quit "));
             spans.extend(kb("Enter", ":send "));
             spans.extend(kb("PgUp/Dn", ":scroll "));
-            spans.extend(kb("?", ":help"));
+            spans.extend(kb("Ctrl+T", ":panel "));
+            spans.extend(kb("Ctrl+A", ":mode "));
+            spans.push(Span::styled("  ", Style::default()));
+            spans.push(Span::styled(
+                format!(" {} ", mode_label),
+                Style::default().fg(mode_color).bg(mode_bg).add_modifier(Modifier::BOLD),
+            ));
         }
         LayoutMode::Normal => {
             spans.extend(kb("^C", ":quit "));
             spans.extend(kb("Enter", ":send "));
-            spans.extend(kb("?", ":help"));
+            spans.extend(kb("Ctrl+A", ":mode "));
+            spans.push(Span::styled("  ", Style::default()));
+            spans.push(Span::styled(
+                format!(" {} ", mode_label),
+                Style::default().fg(mode_color).bg(mode_bg).add_modifier(Modifier::BOLD),
+            ));
         }
         LayoutMode::Compact => {
             spans.extend(kb("^C", " "));
             spans.extend(kb("Ret", ":send "));
-            spans.extend(kb("Pg", ":scroll"));
+            spans.push(Span::styled(
+                format!(" {} ", mode_label),
+                Style::default().fg(mode_color).bg(mode_bg).add_modifier(Modifier::BOLD),
+            ));
         }
         LayoutMode::Tiny => {
             spans.push(Span::styled(

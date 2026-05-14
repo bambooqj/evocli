@@ -813,7 +813,8 @@ pub struct TuiConfig {
     /// Enable terminal mouse capture. Default: false.
     ///
     /// false = native text selection/copy works; PageUp/Down scrolls messages.
-    /// true  = mouse wheel scrolls messages; native selection blocked (use Ctrl+Y to copy).
+    /// true  = mouse wheel scrolls messages; hold Shift+drag for native text selection
+    ///         (standard terminal behavior — same as Claude Code, Gemini CLI, OpenCode).
     #[serde(default)]
     pub enable_mouse: bool,
 }
@@ -821,7 +822,10 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            enable_mouse: false,
+            // true = mouse wheel scrolls messages (same default as Claude Code, Gemini CLI).
+            // Native text selection is blocked; use Ctrl+Y to copy last AI message,
+            // or set `enable_mouse = false` in ~/.evocli/config.toml for native selection.
+            enable_mouse: true,
         }
     }
 }

@@ -89,8 +89,8 @@ INTENT_DESCRIPTIONS: dict[str, str] = {
         "The user wants to plan, design, architect, or think through an approach "
         "before writing any code. They want a roadmap or strategy, not implementation yet. "
         "Examples: 'how should I approach X', 'design a system for Y', "
-        "'what is the best way to Z', 'create a plan for', "
-        "'如何设计', '规划', '方案', '架构设计', '怎么实现好'"
+        "'what is the best way to Z', 'propose a plan for', "
+        "'如何设计', '规划', '方案', '架构设计', '怎么实现好', '制定策略'"
     ),
     "reviewer": (
         "The user wants existing code reviewed, checked, audited, or quality assessed. "
@@ -110,8 +110,8 @@ INTENT_DESCRIPTIONS: dict[str, str] = {
         "The user wants new code written, a feature implemented, something created, "
         "or existing code refactored. They want working code as output. "
         "Examples: 'implement X', 'add feature Y', 'create a function for Z', "
-        "'refactor this module', 'write tests for', "
-        "'实现', '添加功能', '创建', '重构', '编写测试', '开发'"
+        "'refactor this module', 'write tests for', 'make a new file', 'create a directory', "
+        "'实现', '添加功能', '创建', '新建', '重构', '编写测试', '开发', '新建目录', '新建文件'"
     ),
     "risky": (
         "The user wants to perform a potentially destructive or irreversible operation: "
@@ -375,7 +375,8 @@ def _has_action_verb(p: str) -> bool:
 def _has_impl_verb(p: str) -> bool:
     verbs = {"implement", "create", "write", "add", "build", "refactor",
              "generate", "make", "develop", "update", "modify",
-             "实现", "创建", "编写", "添加", "重构", "开发", "生成", "修改"}
+             "实现", "创建", "新建", "编写", "添加", "重构", "开发", "生成", "修改",
+             "建立", "建一个", "新增"}
     return any(v in p for v in verbs)
 
 

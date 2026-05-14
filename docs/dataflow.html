@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EvoCLI 架构数据流向图 / Architecture Data Flow</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --crust: #11111b;
+            --mantle: #181825;
+            --base: #1e1e2e;
+            --surface0: #313244;
+            --surface1: #45475a;
+            --surface2: #585b70;
+            --text: #cdd6f4;
+            --subtext0: #a6adc8;
+            --subtext1: #bac2de;
+            --blue: #8aadf4;
+            --green: #a6da95;
+            --mauve: #cba6f7;
+            --yellow: #f9e2af;
+            --peach: #fab387;
+            --red: #f38ba8;
+            --teal: #94e2d5;
+            --lavender: #b4befe;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background-color: var(--mantle);
+            color: var(--text);
+            font-family: 'JetBrains Mono', 'Noto Sans SC', monospace;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .grid-bg {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background-image:
+                linear-gradient(rgba(108,112,134,0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(108,112,134,0.05) 1px, transparent 1px);
+            background-size: 20px 20px;
+            z-index: -1; pointer-events: none;
+        }
+
+        header {
+            background: var(--crust);
+            padding: 12px 24px;
+            border-bottom: 1px solid var(--surface0);
+            display: flex; justify-content: space-between; align-items: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            flex-shrink: 0;
+        }
+
+        .header-title {
+            display: flex; flex-direction: column; gap: 2px;
+        }
+        .header-title h1 {
+            font-size: 1rem; color: var(--lavender);
+        }
+        .header-title .subtitle {
+            font-size: 0.7rem; color: var(--surface2);
+        }
+
+        .controls {
+            display: flex; gap: 10px; flex-wrap: wrap;
+        }
+        .toggle-label {
+            font-size: 0.78rem; color: var(--subtext0);
+            display: flex; align-items: center; gap: 4px;
+            cursor: pointer; transition: color 0.2s;
+            white-space: nowrap;
+        }
+        .toggle-label:hover { color: var(--text); }
+        .toggle-label input { accent-color: var(--teal); }
+
+        .main-container {
+            display: flex; flex: 1; overflow: hidden;
+        }
+
+        .diagram-scroll-area {
+            flex: 1; overflow: auto; position: relative; padding: 32px;
+        }
+
+        .diagram-wrapper {
+            display: flex; gap: 52px; position: relative;
+            min-width: max-content; min-height: max-content;
+        }
+
+        svg#edge-canvas {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none; z-index: 1;
+        }
+
+        .layer {
+            display: flex; flex-direction: column; gap: 16px;
+            width: 250px; z-index: 2;
+            transition: opacity 0.3s, width 0.3s;
+        }
+        .layer.hidden {
+            opacity: 0; width: 0; overflow: hidden; pointer-events: none;
+        }
+
+        .layer-title {
+            font-size: 0.72rem; color: var(--surface2);
+            text-transform: uppercase; letter-spacing: 1px;
+            border-bottom: 1px dashed var(--surface1);
+            padding-bottom: 6px; margin-bottom: 4px;
+            line-height: 1.5;
+        }
+        .layer-title .cn { color: var(--subtext0); display: block; }
+
+        .node {
+            background: var(--base);
+            border: 1px solid var(--surface1);
+            border-left: 4px solid var(--surface2);
+            border-radius: 6px;
+            padding: 10px 13px;
+            font-size: 0.8rem;
+            position: relative; cursor: pointer;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+            transition: all 0.2s ease;
+        }
+        .node:hover, .node.hovered {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 14px rgba(0,0,0,0.35), 0 0 0 1px currentColor;
+            z-index: 10;
+        }
+        .node.dimmed { opacity: 0.15; filter: grayscale(0.9); }
+
+        .node-en { font-weight: bold; margin-bottom: 2px; font-size: 0.82rem; }
+        .node-cn { font-size: 0.74rem; color: inherit; opacity: 0.85; margin-bottom: 4px; }
+        .node-desc-en { font-size: 0.7rem; color: var(--subtext0); line-height: 1.4; }
+        .node-desc-cn { font-size: 0.7rem; color: var(--subtext0); opacity: 0.8; line-height: 1.4; }
+
+        .node-rust  { border-left-color: var(--blue);  color: var(--blue); }
+        .node-python{ border-left-color: var(--green); color: var(--green); }
+        .node-llm   { border-left-color: var(--mauve); color: var(--mauve); }
+        .node-branch{
+            border-left-color: var(--yellow); color: var(--yellow);
+            border-radius: 14px; text-align: center;
+            border: 1px solid var(--yellow);
+            background: rgba(249,226,175,0.05);
+        }
+        .node-memory{ border-left-color: var(--peach); color: var(--peach); }
+        .node-error { border-left-color: var(--red);   color: var(--red); }
+
+        .tooltip-content {
+            display: none; margin-top: 8px; padding-top: 8px;
+            border-top: 1px dashed var(--surface1);
+            font-size: 0.68rem; color: var(--teal); word-break: break-all;
+            line-height: 1.5;
+        }
+        .node.expanded .tooltip-content {
+            display: block;
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Edge styles */
+        .edge-path {
+            fill: none; stroke: var(--surface1); stroke-width: 1.8px;
+            transition: stroke 0.3s, stroke-width 0.3s, opacity 0.3s;
+        }
+        .edge-flow {
+            fill: none; stroke: var(--text); stroke-width: 1.8px;
+            stroke-dasharray: 5 7;
+            animation: flow 2s linear infinite;
+            opacity: 0.12;
+            transition: opacity 0.3s, stroke 0.3s;
+        }
+        @keyframes flow {
+            from { stroke-dashoffset: 12; }
+            to   { stroke-dashoffset: 0; }
+        }
+        .active-edge.edge-path { stroke: var(--teal); stroke-width: 2.5px; opacity: 1; }
+        .active-edge.edge-flow { stroke: var(--teal); opacity: 0.9; animation: flow 0.6s linear infinite; }
+        .dimmed-edge { opacity: 0.04 !important; }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px; background: var(--crust);
+            border-left: 1px solid var(--surface0);
+            display: flex; flex-direction: column;
+            overflow-y: auto; flex-shrink: 0;
+        }
+        .sidebar-section {
+            padding: 16px 18px;
+            border-bottom: 1px solid var(--surface0);
+        }
+        .sidebar-section h3 {
+            font-size: 0.82rem; color: var(--lavender);
+            margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px;
+        }
+        .sidebar-section h3 .cn { color: var(--subtext0); font-size: 0.78rem; }
+
+        .legend-item {
+            display: flex; align-items: center; gap: 9px;
+            margin-bottom: 7px; font-size: 0.76rem; color: var(--subtext1);
+        }
+        .legend-color { width: 11px; height: 11px; border-radius: 2px; flex-shrink: 0; }
+        .legend-cn { font-size: 0.7rem; color: var(--subtext0); margin-left: 2px; }
+
+        .state-transition {
+            font-size: 0.72rem; margin-bottom: 8px; padding: 8px;
+            background: var(--base); border: 1px solid var(--surface0);
+            border-radius: 4px; display: flex; flex-direction: column; gap: 5px;
+        }
+        .state-nodes { display: flex; align-items: center; gap: 6px; color: var(--text); flex-wrap: wrap; }
+        .state-trigger { color: var(--subtext0); font-style: italic; padding-left: 9px; border-left: 2px solid var(--surface2); }
+        .state-trigger .cn { display: block; font-style: normal; color: var(--surface2); font-size: 0.68rem; }
+        .state-badge { background: var(--surface1); padding: 2px 5px; border-radius: 3px; color: var(--lavender); white-space: nowrap; }
+
+        .intent-table { width: 100%; border-collapse: collapse; font-size: 0.68rem; }
+        .intent-table th {
+            text-align: left; padding: 4px 6px;
+            color: var(--lavender); border-bottom: 1px solid var(--surface1);
+        }
+        .intent-table td { padding: 4px 6px; border-bottom: 1px solid var(--surface0); color: var(--subtext1); }
+        .intent-table tr:hover td { background: var(--surface0); color: var(--text); }
+        .badge-writes { color: var(--green); }
+        .badge-readonly { color: var(--red); }
+
+        .hint-text { font-size: 0.68rem; color: var(--surface2); line-height: 1.6; }
+        .hint-text .cn { color: var(--subtext0); }
+    </style>
+</head>
+<body>
+<div class="grid-bg"></div>
+
+<header>
+    <div class="header-title">
+        <h1>◆ EvoCLI 架构数据流向图 / Architecture Data Flow</h1>
+        <span class="subtitle">点击节点展开文件引用 · 悬停高亮数据路径 / Click node for file ref · Hover to trace flow</span>
+    </div>
+    <div class="controls">
+        <label class="toggle-label"><input type="checkbox" checked data-layer="l1"> L1 用户输入</label>
+        <label class="toggle-label"><input type="checkbox" checked data-layer="l2"> L2 流分发</label>
+        <label class="toggle-label"><input type="checkbox" checked data-layer="l3"> L3 Python入口</label>
+        <label class="toggle-label"><input type="checkbox" checked data-layer="l4"> L4 Agent循环</label>
+        <label class="toggle-label"><input type="checkbox" checked data-layer="l5"> L5 记忆层</label>
+        <label class="toggle-label"><input type="checkbox" checked data-layer="l6"> L6 审批门</label>
+    </div>
+</header>
+
+<div class="main-container">
+    <div class="diagram-scroll-area">
+        <div class="diagram-wrapper" id="diagram">
+            <svg id="edge-canvas"></svg>
+
+            <!-- L1: User Input -->
+            <div class="layer" id="l1">
+                <div class="layer-title">
+                    Layer 1: User Input
+                    <span class="cn">第一层：用户输入（Rust TUI）</span>
+                </div>
+
+                <div class="node node-rust" id="n_input">
+                    <div class="node-en">用户键盘输入</div>
+                    <div class="node-desc-en">TUI Keyboard Event</div>
+                    <div class="node-desc-cn">终端键盘事件</div>
+                    <div class="tooltip-content">crates/tui/src/event_handler.rs:31</div>
+                </div>
+
+                <div class="node node-rust" id="n_handle_key">
+                    <div class="node-en">handle_key_event()</div>
+                    <div class="node-cn">键盘事件处理器</div>
+                    <div class="node-desc-en">event_handler.rs — maps keys to EventAction</div>
+                    <div class="node-desc-cn">将按键映射为事件动作</div>
+                    <div class="tooltip-content">event_handler.rs:31<br>IME保护: KeyEventKind::Press only</div>
+                </div>
+
+                <div class="node node-branch" id="n_branch_key">
+                    <div class="node-en">BRANCH: 按键类型？</div>
+                    <div class="node-cn">Key Type?</div>
+                </div>
+
+                <div class="node node-error" id="n_quit">
+                    <div class="node-en">EventAction::Quit</div>
+                    <div class="node-cn">退出程序</div>
+                    <div class="node-desc-en">Ctrl+C → process exit</div>
+                    <div class="node-desc-cn">Ctrl+C → 进程退出</div>
+                </div>
+
+                <div class="node node-error" id="n_interrupt">
+                    <div class="node-en">EventAction::Interrupt</div>
+                    <div class="node-cn">中断生成</div>
+                    <div class="node-desc-en">Esc → cancel active stream</div>
+                    <div class="node-desc-cn">Esc → 取消当前流</div>
+                </div>
+
+                <div class="node node-rust" id="n_submit">
+                    <div class="node-en">EventAction::Submit(text)</div>
+                    <div class="node-cn">提交消息</div>
+                    <div class="node-desc-en">Enter + non-empty text</div>
+                    <div class="node-desc-cn">Enter + 非空内容（输入法保护）</div>
+                    <div class="tooltip-content">event_handler.rs:417<br>输入法保护: key.kind == Press|Repeat<br>空内容直接 return</div>
+                </div>
+            </div>
+
+            <!-- L2: Stream Dispatch -->
+            <div class="layer" id="l2">
+                <div class="layer-title">
+                    Layer 2: Stream Dispatch
+                    <span class="cn">第二层：流分发（Rust lib.rs）</span>
+                </div>
+
+                <div class="node node-rust" id="n_call_stream">
+                    <div class="node-en">bridge.call_stream()</div>
+                    <div class="node-cn">发起流式调用</div>
+                    <div class="node-desc-en">"agent.stream" + {prompt, session_id}</div>
+                    <div class="node-desc-cn">携带提示词和会话ID</div>
+                    <div class="tooltip-content">lib.rs:277<br>session_id = CWD FNV-1a hash (项目唯一标识)</div>
+                </div>
+
+                <div class="node node-rust" id="n_soul_bridge">
+                    <div class="node-en">SoulBridge</div>
+                    <div class="node-cn">Rust↔Python 桥接层</div>
+                    <div class="node-desc-en">JSON-RPC over stdout/stdin</div>
+                    <div class="node-desc-cn">通过标准输入输出传输 JSON-RPC</div>
+                    <div class="tooltip-content">crates/soul_bridge/src/lib.rs<br>evocli_soul/host_bridge.py:26</div>
+                </div>
+
+                <div class="node node-rust" id="n_stream_loop">
+                    <div class="node-en">tokio::spawn 流读取</div>
+                    <div class="node-cn">Async Stream Reader</div>
+                    <div class="node-desc-en">Background task reads chunks</div>
+                    <div class="node-desc-cn">后台任务持续读取流片段</div>
+                    <div class="tooltip-content">lib.rs:284<br>first_chunk_timeout: 60s 超时保护</div>
+                </div>
+
+                <div class="node node-rust" id="n_chunk_text">
+                    <div class="node-en">StreamChunk::Text</div>
+                    <div class="node-cn">文本片段</div>
+                    <div class="node-desc-en">→ app.append_token() → TUI render</div>
+                    <div class="node-desc-cn">→ 追加token → TUI重绘</div>
+                    <div class="tooltip-content">app.rs::append_token()<br>STREAM_REDRAW_EVERY = 1 (每token重绘)</div>
+                </div>
+
+                <div class="node node-rust" id="n_chunk_event">
+                    <div class="node-en">StreamChunk::Event</div>
+                    <div class="node-cn">事件片段</div>
+                    <div class="node-desc-en">cost_update / tool_call_start/done / soul_status</div>
+                    <div class="node-desc-cn">成本更新 / 工具调用 / 状态标签</div>
+                </div>
+
+                <div class="node node-rust" id="n_handle_event">
+                    <div class="node-en">handle_soul_event()</div>
+                    <div class="node-cn">Soul事件处理</div>
+                    <div class="node-desc-en">Mutates AppState + Work Panel</div>
+                    <div class="node-desc-cn">更新应用状态和工作面板</div>
+                    <div class="tooltip-content">lib.rs:681<br>tool_call_start → AppState::CallingTool<br>tool_call_done → AppState::Streaming<br>cost_update → token计数<br>soul_status → thinking_label</div>
+                </div>
+            </div>
+
+            <!-- L3: Python Entry -->
+            <div class="layer" id="l3">
+                <div class="layer-title">
+                    Layer 3: Python Soul Entry
+                    <span class="cn">第三层：Python Soul 入口</span>
+                </div>
+
+                <div class="node node-python" id="n_router">
+                    <div class="node-en">router.dispatch()</div>
+                    <div class="node-cn">RPC 路由分发</div>
+                    <div class="node-desc-en">main.py JSON-RPC router</div>
+                    <div class="node-desc-cn">main.py JSON-RPC 请求分发</div>
+                    <div class="tooltip-content">evocli_soul/main.py:154</div>
+                </div>
+
+                <div class="node node-python" id="n_run_agent">
+                    <div class="node-en">run_agent_stream_body()</div>
+                    <div class="node-cn">Agent流主体入口</div>
+                    <div class="node-desc-en">Main entry — full autonomous pipeline</div>
+                    <div class="node-desc-cn">完整自主执行管线入口</div>
+                    <div class="tooltip-content">handlers/agent_loop.py:286<br>包含: 意图分类 → 上下文构建 → 执行循环</div>
+                </div>
+
+                <div class="node node-memory" id="n_mem_prewarm">
+                    <div class="node-en">Memory pre-warm</div>
+                    <div class="node-cn">记忆预热</div>
+                    <div class="node-desc-en">Background: load LanceDB vectors</div>
+                    <div class="node-desc-cn">后台加载 LanceDB 向量模型（~15s）</div>
+                    <div class="tooltip-content">jina-embeddings-v2-base-zh 768维<br>首次加载约 15-60s</div>
+                </div>
+
+                <div class="node node-branch" id="n_branch_intent">
+                    <div class="node-en">意图分类 Intent Classification</div>
+                    <div class="node-cn">Semantic + Keyword fallback</div>
+                    <div class="tooltip-content">intent_profile.py:254<br>语义相似度 (threshold=0.22)<br>→ 关键词匹配回退</div>
+                </div>
+
+                <div class="node node-python" id="n_intent_res">
+                    <div class="node-en">Result Intent 意图结果</div>
+                    <div class="node-cn">chat / coder / planner / researcher / risky…</div>
+                    <div class="node-desc-en">Controls: max_iters, context_depth, writes_allowed</div>
+                    <div class="node-desc-cn">决定: 最大迭代数 / 上下文深度 / 写权限</div>
+                </div>
+
+                <div class="node node-branch" id="n_branch_risky">
+                    <div class="node-en">⚠ Risky Gate 危险操作门</div>
+                    <div class="node-cn">require_confirm? 需要确认?</div>
+                    <div class="tooltip-content">agent_loop.py:376<br>risky意图 → 要求用户输入 "yes" 前缀<br>未确认 → 返回警告，不执行</div>
+                </div>
+
+                <div class="node node-python" id="n_api_check">
+                    <div class="node-en">API Key Check</div>
+                    <div class="node-cn">API密钥验证</div>
+                    <div class="node-desc-en">config → env var → keyring</div>
+                    <div class="node-desc-cn">配置 → 环境变量 → 系统密钥链</div>
+                    <div class="tooltip-content">agent_loop.py:427<br>_PROVIDER_ENV 映射表<br>无key → 返回错误提示</div>
+                </div>
+
+                <div class="node node-python" id="n_agent_create">
+                    <div class="node-en">EvoCLIAgent Creation</div>
+                    <div class="node-cn">Agent实例创建</div>
+                    <div class="node-desc-en">read_only based on intent</div>
+                    <div class="node-desc-cn">根据意图决定是否只读模式</div>
+                    <div class="tooltip-content">agent_loop.py:402<br>planner/reviewer/researcher → read_only=True<br>coder/debugger → read_only=False</div>
+                </div>
+
+                <div class="node node-memory" id="n_git_snap">
+                    <div class="node-en">git.snapshot()</div>
+                    <div class="node-cn">Git快照（安全备份）</div>
+                    <div class="node-desc-en">Background (if writes_allowed)</div>
+                    <div class="node-desc-cn">后台执行，写权限时创建 stash</div>
+                    <div class="tooltip-content">agent_loop.py:536<br>Aider安全模式: 修改前自动备份<br>stash_ref 存入 session events</div>
+                </div>
+
+                <div class="node node-python" id="n_ctx_engine">
+                    <div class="node-en">context_engine.build()</div>
+                    <div class="node-cn">上下文构建</div>
+                    <div class="node-desc-en">System prompt: constraints + memory + repomap</div>
+                    <div class="node-desc-cn">系统提示词: 约束 + 记忆 + 代码地图</div>
+                    <div class="tooltip-content">context_engine.py<br>P1/P2/P3优先级Token预算<br>Anchored Summary压缩</div>
+                </div>
+            </div>
+
+            <!-- L4: Agent Loop -->
+            <div class="layer" id="l4">
+                <div class="layer-title">
+                    Layer 4: Agent Execution Loop
+                    <span class="cn">第四层：Agent 执行循环（自主迭代）</span>
+                </div>
+
+                <div class="node node-python" id="n_agent_loop">
+                    <div class="node-en">Agent Execution Loop</div>
+                    <div class="node-cn">自主执行循环</div>
+                    <div class="node-desc-en">for iter in range(max_auto_iters)</div>
+                    <div class="node-desc-cn">按意图决定最大迭代次数（1~8）</div>
+                    <div class="tooltip-content">agent_loop.py:466<br>exit条件: task_complete / max_iters / 连续无工具调用</div>
+                </div>
+
+                <div class="node node-llm" id="n_llm_call">
+                    <div class="node-en">LLM Call (LiteLLM Router)</div>
+                    <div class="node-cn">大模型调用</div>
+                    <div class="node-desc-en">fast: gpt-4o-mini / smart: gpt-4o</div>
+                    <div class="node-desc-cn">快速模型 / 智能模型 双层路由</div>
+                    <div class="tooltip-content">agent_litellm.py:425<br>LiteLLM Router → 自动重试/fallback<br>支持100+模型提供商</div>
+                </div>
+
+                <div class="node node-python" id="n_stream_tokens">
+                    <div class="node-en">Stream Tokens → TUI</div>
+                    <div class="node-cn">流式输出到界面</div>
+                    <div class="node-desc-en">Yields chunks (done=False) until complete</div>
+                    <div class="node-desc-cn">持续推送片段到TUI，最后发 done=True</div>
+                </div>
+
+                <div class="node node-branch" id="n_branch_tools">
+                    <div class="node-en">Tool Calls? 有工具调用?</div>
+                    <div class="node-cn">consecutive_no_tools check</div>
+                    <div class="tooltip-content">agent_litellm.py:89<br>无工具 → consecutive_no_tools++<br>≥ MAX_NO_TOOL_ITERS → 停止循环</div>
+                </div>
+
+                <div class="node node-python" id="n_exec_tool">
+                    <div class="node-en">_execute_tool()</div>
+                    <div class="node-cn">工具执行分发器</div>
+                    <div class="node-desc-en">Routes to Python-native or Rust bridge</div>
+                    <div class="node-desc-cn">路由到 Python 原生或 Rust 桥接</div>
+                    <div class="tooltip-content">agent_executor.py:53<br>emit tool_call_start/done events → TUI</div>
+                </div>
+
+                <div class="node node-python" id="n_tools_py">
+                    <div class="node-en">Python-native Tools</div>
+                    <div class="node-cn">Python原生工具</div>
+                    <div class="node-desc-en">fs_apply_search_replace · memory_recall · spawn_agent</div>
+                    <div class="node-desc-cn">文件编辑 · 记忆召回 · 子Agent</div>
+                    <div class="tooltip-content">agent_executor.py:128 (fs_apply_search_replace)<br>→ edit_engine.py MultiReplacer 5策略<br>agent_executor.py:404 (memory_recall)<br>→ LanceDB 向量搜索</div>
+                </div>
+
+                <div class="node node-rust" id="n_tools_rust">
+                    <div class="node-en">Bridge Tools → Rust Host</div>
+                    <div class="node-cn">桥接工具（经Rust执行）</div>
+                    <div class="node-desc-en">fs.write · fs.read · shell.run · git.* · code_intel.*</div>
+                    <div class="node-desc-cn">文件写/读 · Shell命令 · Git · 代码索引</div>
+                    <div class="tooltip-content">host_bridge.py:26 → bridge.call(tool, params)<br>crates/host/src/tool_dispatch.rs<br>fs.write: fs_tools.rs:91 (原子写: tmp→rename)<br>shell.run: 白名单安全检查</div>
+                </div>
+
+                <div class="node node-branch" id="n_branch_circuit">
+                    <div class="node-en">⚡ Circuit Breaker 断路器</div>
+                    <div class="node-cn">3次连续工具失败?</div>
+                    <div class="tooltip-content">agent_litellm.py:257<br>连续3次Error → 注入警告消息<br>让LLM改变策略而非无限重试</div>
+                </div>
+
+                <div class="node node-branch" id="n_branch_task_done">
+                    <div class="node-en">task_complete? 任务完成?</div>
+                    <div class="node-cn">Verification & Break</div>
+                    <div class="tooltip-content">agent_executor.py<br>YES → 运行验证命令 → done=True → 退出<br>NO → 注入续行提示 → 下一轮迭代</div>
+                </div>
+            </div>
+
+            <!-- L5: Memory -->
+            <div class="layer" id="l5">
+                <div class="layer-title">
+                    Layer 5: Memory & Context
+                    <span class="cn">第五层：记忆与上下文系统</span>
+                </div>
+
+                <div class="node node-memory" id="n_mem_recall">
+                    <div class="node-en">memory_recall(query)</div>
+                    <div class="node-cn">记忆召回工具</div>
+                    <div class="node-desc-en">Called by Agent before any code task</div>
+                    <div class="node-desc-cn">代码任务前必须调用（Karpathy原则）</div>
+                    <div class="tooltip-content">memory_client.py<br>P1(项目) → P2(工具) → P3(全局) 优先级</div>
+                </div>
+
+                <div class="node node-memory" id="n_mem_search">
+                    <div class="node-en">EvoCLIMemory.search()</div>
+                    <div class="node-cn">混合检索</div>
+                    <div class="node-desc-en">LanceDB vector [primary] + JSONL [fallback]</div>
+                    <div class="node-desc-cn">向量搜索（主）+ 文本搜索（备）</div>
+                    <div class="tooltip-content">LanceDB: jina-embeddings-v2-base-zh 768维<br>JSONL: 无GPU/模型时的文本回退<br>时间衰减 + 冲突检测</div>
+                </div>
+
+                <div class="node node-memory" id="n_mem_distill">
+                    <div class="node-en">memory_distill.py</div>
+                    <div class="node-cn">记忆蒸馏（后台）</div>
+                    <div class="node-desc-en">Success/fail chains → L2 episodic memory</div>
+                    <div class="node-desc-cn">成功/失败链路 → L2 情节记忆</div>
+                    <div class="tooltip-content">每轮结束后后台执行<br>提炼高质量修复经验</div>
+                </div>
+
+                <div class="node node-memory" id="n_evo_engine">
+                    <div class="node-en">evolution_engine</div>
+                    <div class="node-cn">自进化引擎</div>
+                    <div class="node-desc-en">PrefixSpan pattern → auto Skill draft</div>
+                    <div class="node-desc-cn">重复模式检测 → 自动生成Skill草稿</div>
+                    <div class="tooltip-content">evolution/scheduler.py: 每10分钟扫描<br>PrefixSpan频繁子序列挖掘<br>→ skill_engine Draft lifecycle</div>
+                </div>
+            </div>
+
+            <!-- L6: Gates -->
+            <div class="layer" id="l6">
+                <div class="layer-title">
+                    Layer 6: Approval Gates
+                    <span class="cn">第六层：审批门控（阻塞等待用户）</span>
+                </div>
+
+                <div class="node node-python" id="n_gate_approval">
+                    <div class="node-en">WaitingApproval Gate</div>
+                    <div class="node-cn">等待用户审批</div>
+                    <div class="node-desc-en">bridge.prompt_approval() → TUI modal</div>
+                    <div class="node-desc-cn">弹出确认弹窗，等待 y/n</div>
+                    <div class="tooltip-content">host_bridge.py::prompt_approval<br>TUI: draw_approval_modal → EventAction::ApprovalResponse<br>用户按 y=允许 / n=拒绝</div>
+                </div>
+
+                <div class="node node-python" id="n_gate_choice">
+                    <div class="node-en">WaitingChoice Gate</div>
+                    <div class="node-cn">等待用户选择</div>
+                    <div class="node-desc-en">bridge.prompt_choice(options) → numbered list</div>
+                    <div class="node-desc-cn">显示编号选项列表，支持自定义输入</div>
+                    <div class="tooltip-content">host_bridge.py::prompt_choice<br>TUI: draw_choice_modal → EventAction::ChoiceResponse<br>支持: 选编号 / 自定义文字 / Esc取消</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+
+        <!-- Legend -->
+        <div class="sidebar-section">
+            <h3>图例 Legend</h3>
+            <div class="legend-item">
+                <div class="legend-color" style="background:var(--blue)"></div>
+                <span>Rust Host / TUI <span class="legend-cn">（宿主层）</span></span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background:var(--green)"></div>
+                <span>Python Soul <span class="legend-cn">（AI逻辑层）</span></span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background:var(--mauve)"></div>
+                <span>LLM / AI <span class="legend-cn">（大模型调用）</span></span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background:var(--yellow);border-radius:50%"></div>
+                <span>Branch / 分支判断</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background:var(--peach)"></div>
+                <span>Memory / 记忆存储</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background:var(--red)"></div>
+                <span>Error / Exit <span class="legend-cn">（错误/退出）</span></span>
+            </div>
+            <div style="margin-top:10px" class="hint-text">
+                点击节点 → 展开文件引用<br>
+                <span class="cn">Click node → show file:line<br></span>
+                悬停节点 → 高亮数据路径<br>
+                <span class="cn">Hover node → highlight flow</span>
+            </div>
+        </div>
+
+        <!-- AppState Machine -->
+        <div class="sidebar-section">
+            <h3>状态机 <span class="cn">AppState Machine</span></h3>
+
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">Idle</span> → <span class="state-badge">Thinking</span></div>
+                <div class="state-trigger">[Submit] 用户提交消息</div>
+            </div>
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">Thinking</span> → <span class="state-badge">Streaming</span></div>
+                <div class="state-trigger">[first chunk] 首个响应片段</div>
+            </div>
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">Streaming</span> → <span class="state-badge">CallingTool</span></div>
+                <div class="state-trigger">[tool_call_start] 工具调用开始</div>
+            </div>
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">CallingTool</span> → <span class="state-badge">Streaming</span></div>
+                <div class="state-trigger">[tool_call_done] 工具调用完成</div>
+            </div>
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">Streaming</span> → <span class="state-badge">Idle</span></div>
+                <div class="state-trigger">[done=True] 任务完成</div>
+            </div>
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">Any</span> → <span class="state-badge">Idle</span></div>
+                <div class="state-trigger">[Esc] 用户中断 / task_complete</div>
+            </div>
+            <div class="state-transition">
+                <div class="state-nodes"><span class="state-badge">Streaming</span> → <span class="state-badge">WaitingApproval</span></div>
+                <div class="state-trigger">[approval gate] 需要用户确认</div>
+            </div>
+        </div>
+
+        <!-- Intent Branches -->
+        <div class="sidebar-section">
+            <h3>意图分支 <span class="cn">Intent Profiles</span></h3>
+            <table class="intent-table">
+                <thead>
+                    <tr>
+                        <th>意图</th>
+                        <th>迭代</th>
+                        <th>写权限</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>chat 闲聊</td><td>1</td><td class="badge-readonly">✗</td></tr>
+                    <tr><td>question 问答</td><td>1</td><td class="badge-readonly">✗</td></tr>
+                    <tr><td>researcher 探索</td><td>6</td><td class="badge-readonly">✗</td></tr>
+                    <tr><td>planner 规划</td><td>3</td><td class="badge-readonly">✗</td></tr>
+                    <tr><td>reviewer 审查</td><td>4</td><td class="badge-readonly">✗</td></tr>
+                    <tr><td>coder 编码</td><td>8</td><td class="badge-writes">✓</td></tr>
+                    <tr><td>debugger 调试</td><td>8</td><td class="badge-writes">✓</td></tr>
+                    <tr><td>risky ⚠ 危险</td><td>8</td><td class="badge-writes">✓+确认</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Tool Categories -->
+        <div class="sidebar-section">
+            <h3>工具分类 <span class="cn">Tool Categories</span></h3>
+            <div class="hint-text">
+                <strong style="color:var(--green)">Python原生工具：</strong><br>
+                fs_apply_search_replace (edit_engine.py)<br>
+                memory_recall (LanceDB)<br>
+                spawn_agent (子Agent)<br>
+                fs_lint_file<br><br>
+                <strong style="color:var(--blue)">Rust桥接工具：</strong><br>
+                fs.write / fs.read / fs.read_range<br>
+                shell.run (白名单检查)<br>
+                git.commit / git.snapshot<br>
+                code_intel.* (符号索引)<br>
+                memory.write / memory.recall (RPC)<br>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const edges = [
+    // L1 internal
+    { src:'n_input',      tgt:'n_handle_key' },
+    { src:'n_handle_key', tgt:'n_branch_key' },
+    { src:'n_branch_key', tgt:'n_quit' },
+    { src:'n_branch_key', tgt:'n_interrupt' },
+    { src:'n_branch_key', tgt:'n_submit' },
+    // L1 → L2
+    { src:'n_submit',     tgt:'n_call_stream' },
+    // L2 internal
+    { src:'n_call_stream', tgt:'n_soul_bridge' },
+    { src:'n_soul_bridge', tgt:'n_stream_loop' },
+    { src:'n_stream_loop', tgt:'n_chunk_text' },
+    { src:'n_stream_loop', tgt:'n_chunk_event' },
+    { src:'n_chunk_event', tgt:'n_handle_event' },
+    // L2 → L3 (bridge sends RPC to Python)
+    { src:'n_soul_bridge', tgt:'n_router' },
+    // L3 internal
+    { src:'n_router',       tgt:'n_run_agent' },
+    { src:'n_run_agent',    tgt:'n_mem_prewarm' },
+    { src:'n_run_agent',    tgt:'n_branch_intent' },
+    { src:'n_branch_intent',tgt:'n_intent_res' },
+    { src:'n_intent_res',   tgt:'n_branch_risky' },
+    { src:'n_branch_risky', tgt:'n_api_check' },
+    { src:'n_api_check',    tgt:'n_agent_create' },
+    { src:'n_agent_create', tgt:'n_git_snap' },
+    { src:'n_agent_create', tgt:'n_ctx_engine' },
+    // L3 → L4
+    { src:'n_ctx_engine',   tgt:'n_agent_loop' },
+    // L4 internal
+    { src:'n_agent_loop',   tgt:'n_llm_call' },
+    { src:'n_llm_call',     tgt:'n_stream_tokens' },
+    { src:'n_stream_tokens',tgt:'n_branch_tools' },
+    { src:'n_branch_tools', tgt:'n_exec_tool' },
+    { src:'n_branch_tools', tgt:'n_agent_loop' },  // no tools → loop
+    { src:'n_exec_tool',    tgt:'n_tools_py' },
+    { src:'n_exec_tool',    tgt:'n_tools_rust' },
+    { src:'n_tools_py',     tgt:'n_branch_circuit' },
+    { src:'n_tools_rust',   tgt:'n_branch_circuit' },
+    { src:'n_branch_circuit',tgt:'n_branch_task_done' },
+    { src:'n_branch_task_done',tgt:'n_agent_loop' }, // loop back
+    // L4 → L5
+    { src:'n_tools_py',    tgt:'n_mem_recall' },
+    { src:'n_mem_recall',  tgt:'n_mem_search' },
+    { src:'n_agent_loop',  tgt:'n_mem_distill' },
+    { src:'n_mem_distill', tgt:'n_evo_engine' },
+    // L4 → L6
+    { src:'n_stream_tokens', tgt:'n_gate_approval' },
+    { src:'n_stream_tokens', tgt:'n_gate_choice' },
+    // L6 loops back to TUI
+    { src:'n_gate_approval', tgt:'n_handle_key' },
+    { src:'n_gate_choice',   tgt:'n_handle_key' },
+];
+
+function drawEdges() {
+    const svg = document.getElementById('edge-canvas');
+    svg.innerHTML = '';
+    const svgRect = svg.getBoundingClientRect();
+
+    // Add arrowhead marker
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', 'arrow');
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '8');
+    marker.setAttribute('refX', '6');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    const arrowPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    arrowPath.setAttribute('d', 'M0,0 L0,6 L8,3 z');
+    arrowPath.setAttribute('fill', '#585b70');
+    marker.appendChild(arrowPath);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    edges.forEach(edge => {
+        const src = document.getElementById(edge.src);
+        const tgt = document.getElementById(edge.tgt);
+        if (!src || !tgt || src.offsetParent === null || tgt.offsetParent === null) return;
+
+        const s = src.getBoundingClientRect();
+        const t = tgt.getBoundingClientRect();
+
+        const startX = s.right  - svgRect.left;
+        const startY = s.top + s.height/2 - svgRect.top;
+        const endX   = t.left   - svgRect.left;
+        const endY   = t.top + t.height/2 - svgRect.top;
+
+        let pathD;
+        if (endX >= startX - 30) {
+            // Forward edge
+            const cx = Math.max(40, (endX - startX) * 0.5);
+            pathD = `M${startX},${startY} C${startX+cx},${startY} ${endX-cx},${endY} ${endX},${endY}`;
+        } else {
+            // Backward loop
+            const sBot = s.bottom - svgRect.top;
+            const tTop = t.top - svgRect.top;
+            const sMid = s.left + s.width/2 - svgRect.left;
+            const tMid = t.left + t.width/2 - svgRect.left;
+            pathD = `M${sMid},${sBot} C${sMid},${sBot+50} ${tMid},${tTop-50} ${tMid},${tTop}`;
+        }
+
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', pathD);
+        path.setAttribute('class', `edge-path edge-${edge.src} edge-${edge.tgt}`);
+        path.setAttribute('marker-end', 'url(#arrow)');
+
+        const flow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        flow.setAttribute('d', pathD);
+        flow.setAttribute('class', `edge-flow edge-${edge.src} edge-${edge.tgt}`);
+
+        svg.appendChild(path);
+        svg.appendChild(flow);
+    });
+}
+
+// Interactions
+document.querySelectorAll('.node').forEach(node => {
+    node.addEventListener('mouseenter', () => {
+        node.classList.add('hovered');
+        document.querySelectorAll(`.edge-${node.id}`).forEach(e => e.classList.add('active-edge'));
+        document.querySelectorAll('.node:not(.hovered)').forEach(n => n.classList.add('dimmed'));
+        document.querySelectorAll(`.edge-path:not(.active-edge),.edge-flow:not(.active-edge)`).forEach(e => e.classList.add('dimmed-edge'));
+    });
+    node.addEventListener('mouseleave', () => {
+        node.classList.remove('hovered');
+        document.querySelectorAll('.node').forEach(n => n.classList.remove('dimmed'));
+        document.querySelectorAll('.edge-path,.edge-flow').forEach(e => {
+            e.classList.remove('active-edge','dimmed-edge');
+        });
+    });
+    node.addEventListener('click', () => {
+        if (node.querySelector('.tooltip-content')) {
+            node.classList.toggle('expanded');
+            setTimeout(drawEdges, 250);
+        }
+    });
+});
+
+// Layer toggles
+document.querySelectorAll('.toggle-label input').forEach(cb => {
+    cb.addEventListener('change', e => {
+        const layer = document.getElementById(e.target.getAttribute('data-layer'));
+        layer.classList.toggle('hidden', !e.target.checked);
+        setTimeout(drawEdges, 350);
+    });
+});
+
+window.addEventListener('load', () => setTimeout(drawEdges, 150));
+window.addEventListener('resize', drawEdges);
+</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_textarea::TextArea;
 
-use crate::app::{App, AppState, ChatMessage};
+use crate::app::{App, AppState, ChatMessage, WorkPanelTab};
 
 fn fmt_k(n: usize) -> String {
     if n >= 1_000_000 {
@@ -274,6 +274,16 @@ pub fn handle_key_event(
 
     match key.code {
         KeyCode::Enter => {
+            // ── IME protection ───────────────────────────────────────────────
+            // Only trigger on Press events. On terminals with keyboard enhancement
+            // protocol (REPORT_EVENT_TYPES), IME composition-confirm often arrives
+            // as Release or without explicit Press — filtering here prevents
+            // accidental message sends during Chinese/Japanese/Korean IME input.
+            use crossterm::event::KeyEventKind;
+            if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+                return EventAction::None;
+            }
+
             // Shift+Enter 或 Alt+Enter → 在输入框中插入换行（多行输入）
             if key.modifiers.contains(KeyModifiers::SHIFT)
                 || key.modifiers.contains(KeyModifiers::ALT)
@@ -407,6 +417,36 @@ Slash commands:";
             EventAction::Submit(text)
         }
 
+        // ── 空输入框时方向键滚动（与 Claude Code / Gemini CLI 对齐）──────
+        // Alt+Up/Down → fast scroll (takes priority over empty-box check)
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.scroll_fast_up();
+            EventAction::None
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.scroll_fast_down();
+            EventAction::None
+        }
+        // Plain Up/Down: scroll when input is empty, otherwise move textarea cursor
+        KeyCode::Up => {
+            let is_empty = textarea.lines().iter().all(|l| l.is_empty());
+            if is_empty {
+                app.scroll_up();
+                return EventAction::None;
+            }
+            textarea.input(key);
+            EventAction::None
+        }
+        KeyCode::Down => {
+            let is_empty = textarea.lines().iter().all(|l| l.is_empty());
+            if is_empty {
+                app.scroll_down();
+                return EventAction::None;
+            }
+            textarea.input(key);
+            EventAction::None
+        }
+
         // 滚动快捷键（Idle 状态）
         KeyCode::PageUp => {
             app.scroll_up();
@@ -428,22 +468,42 @@ Slash commands:";
             EventAction::None
         }
 
-        // Alt+Up / Alt+Down → 快速滚动（5行）
-        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
-            app.scroll_fast_up();
-            EventAction::None
-        }
-        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-            app.scroll_fast_down();
-            EventAction::None
-        }
-
         // Ctrl+L → 清屏（等同于 /clear）
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.messages.retain(|m| matches!(m, ChatMessage::System(_)));
             app.messages
                 .push(ChatMessage::System("Screen cleared. (Ctrl+L)".into()));
             app.invalidate_cache(); // message list changed
+            EventAction::None
+        }
+
+        // Ctrl+T → toggle Work Panel (right sidebar)
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.work_panel_visible = !app.work_panel_visible;
+            EventAction::None
+        }
+
+        // Ctrl+W → switch Work Panel tab (Tools ↔ Context)
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.work_panel_tab = match app.work_panel_tab {
+                WorkPanelTab::Tools => WorkPanelTab::Context,
+                WorkPanelTab::Context => WorkPanelTab::Tools,
+            };
+            EventAction::None
+        }
+
+        // Ctrl+A → cycle ApproveMode (Auto → Manual → Plan → Auto)
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.approve_mode = app.approve_mode.cycle();
+            let label = app.approve_mode.label().to_string();
+            app.notify(format!("Mode: {label}"), crate::app::NotifLevel::Info);
+            EventAction::None
+        }
+
+        // Ctrl+O → toggle transcript mode (expanded tool detail)
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.transcript_mode = !app.transcript_mode;
+            app.invalidate_cache();
             EventAction::None
         }
 
@@ -501,7 +561,7 @@ pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, que
 
     let (title, border_color): (String, Color) = match state {
         AppState::Idle | AppState::Error(_) => (
-            " ❯  Message  (Enter:send · S+Enter:newline · Tab:/cmd · Esc:clear) ".into(),
+            " \u{276f}  Message  (Enter:send \u{b7} S+Enter:newline \u{b7} Tab:cmd \u{b7} Shift+drag:select) ".into(),
             Color::Rgb(138, 173, 244),
         ),
         AppState::Thinking => (

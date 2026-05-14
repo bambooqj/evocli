@@ -12,7 +12,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture,
+        EnableBracketedPaste, EnableMouseCapture,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -20,18 +24,22 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use app::{App, AppState, ChatMessage, StepStatus};
+use app::{App, AppState, ChatMessage, ContextKind, StepStatus};
 use event_handler::EventAction;
 use soul_bridge::{SoulBridge, StreamChunk};
 
 /// Cleanup guard — restores terminal on drop (even on panic / early return).
-/// Tracks whether mouse capture was enabled so cleanup matches setup.
 struct CleanupGuard {
     mouse_enabled: bool,
+    kbd_enhanced: bool,
 }
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
+        // Restore keyboard protocol before anything else
+        if self.kbd_enhanced {
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        }
         let _ = disable_raw_mode();
         if self.mouse_enabled {
             let _ = execute!(
@@ -69,23 +77,35 @@ pub async fn run(
         execute!(
             stdout,
             EnterAlternateScreen,
-            EnableMouseCapture, // mouse scroll; disables native text selection
+            EnableMouseCapture,
             EnableBracketedPaste,
         )?;
     } else {
         execute!(
             stdout,
             EnterAlternateScreen,
-            // No EnableMouseCapture → terminal handles text selection natively.
-            // Users can click+drag to select text and use Ctrl+C/right-click to copy.
-            // Scrolling uses PageUp/Down/Home/End keyboard shortcuts.
             EnableBracketedPaste,
         )?;
     }
+
+    // ── Keyboard enhancement protocol (crossterm 0.28+) ─
+    // Enables REPORT_EVENT_TYPES so key events carry Press/Release/Repeat.
+    // This lets us distinguish IME composition-confirm Enter (Release/Repeat)
+    // from real user Enter (Press). Gracefully no-ops on terminals that don't
+    // support it (older xterm, tmux without passthrough, etc.).
+    let kbd_enhanced = execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+        )
+    ).is_ok();
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let _guard = CleanupGuard {
         mouse_enabled: enable_mouse,
+        kbd_enhanced,
     };
 
     // ── App state + textarea ────────────────────────────
@@ -248,11 +268,9 @@ pub async fn run(
                             }
                             EventAction::Submit(text) => {
                                 let _ = interrupt_tx.send(false); // reset interrupt flag
-                                // CRITICAL: Draw immediately to show "Thinking..." status.
-                                // Without this, the TUI freezes visually for 15-20s while
-                                // bridge.call_stream() awaits the Soul (fastembed + LLM setup).
-                                // app.state was already set to Thinking by handle_key_event.
                                 app.thinking_label.clear(); // reset any stale label from prior turn
+                                app.turn_count += 1;        // increment turn for Work Panel grouping
+                                app.clear_context_items();  // fresh context for this turn
                                 terminal.draw(|f| ui::draw(f, &mut app, &textarea))?;
                                 // Use pre-computed session_id (computed once before main loop,
                                 // not on every keypress — avoids live current_dir() calls).
@@ -719,10 +737,14 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
                 },
             );
             app.invalidate_cache();
-            app.state = AppState::CallingTool { tool, display };
+            app.state = AppState::CallingTool { tool: tool.clone(), display: display.clone() };
+            app.tool_start = Some(std::time::Instant::now()); // track tool elapsed time
+            app.push_tool_start(tool, display); // record in work panel history
         }
         "tool_call_done" => {
             let ok = event["ok"].as_bool().unwrap_or(true);
+            app.tool_start = None; // clear tool timer
+            app.finish_tool(ok);   // update work panel history with duration
             // 更新最后一条 ToolCall 消息的状态（⟳ → ✓/✗）
             for msg in app.messages.iter_mut().rev() {
                 if let ChatMessage::ToolCall {
@@ -805,12 +827,19 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
             let message = event["message"].as_str().unwrap_or("");
             match status {
                 "loading" => {
-                    // Update thinking_label so input bar border shows real progress.
-                    // e.g. "Loading context…" → "Calling LLM…" as stages advance.
+                    // Update thinking_label so activity strip shows real progress.
                     app.thinking_label = message.to_string();
-                    // Transient: show in notification bar, auto-expires in 8s.
-                    // Never pushed to permanent messages to avoid "stuck loading" UX.
-                    app.notify(format!("⏳ {message}"), app::NotifLevel::Info);
+                    // Detect context loading events and populate the Work Panel Context tab
+                    let msg_lower = message.to_lowercase();
+                    if msg_lower.contains("agents.md") || msg_lower.contains("claude.md") || msg_lower.contains("loading context") {
+                        app.set_context_item("AGENTS.md / context files".to_string(), ContextKind::File);
+                    } else if msg_lower.contains("memory") || msg_lower.contains("recall") || msg_lower.contains("constraint") {
+                        // Count memory entries from message if possible
+                        app.set_context_item("Memory (constraints + episodes)".to_string(), ContextKind::Memory);
+                    } else if msg_lower.contains("skill") {
+                        app.set_context_item("Skills loaded".to_string(), ContextKind::Skill);
+                    }
+                    app.notify(format!("\u{23f3} {message}"), app::NotifLevel::Info);
                 }
                 "ready" => {
                     // Clear thinking_label — we're no longer in a loading stage.

@@ -5,6 +5,21 @@ import logging
 
 log = logging.getLogger("evocli.agent")
 
+# Provider → API key environment variable mapping.
+# Imported by agent_loop.py for fast-fail when no key is configured.
+_PROVIDER_ENV: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai":    "OPENAI_API_KEY",
+    "deepseek":  "DEEPSEEK_API_KEY",
+    "groq":      "GROQ_API_KEY",
+    "gemini":    "GEMINI_API_KEY",
+    "google":    "GEMINI_API_KEY",
+    "mistral":   "MISTRAL_API_KEY",
+    "cohere":    "CO_API_KEY",
+    "ollama":    "",   # local, no key required
+    "lmstudio":  "",   # local, no key required
+}
+
 # 导入生产级提示词库（替代原始 6 行 _SYSTEM_TEMPLATE）
 from evocli_soul.default_prompts import build_system_prompt
 from evocli_soul.agent_execution import AgentExecutionMixin  # noqa: F401

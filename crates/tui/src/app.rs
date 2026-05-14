@@ -8,6 +8,71 @@
 
 use ratatui::text::Line;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEW TYPES — Work Panel, Tool History, Approval Mode
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Which tab is active in the Work Panel (right sidebar).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkPanelTab {
+    Tools,    // Tool timeline with timings for this session
+    Context,  // Loaded files + memory summary
+}
+
+/// Approval mode — always visible in the footer.
+/// Auto  = AI applies changes without asking (default)
+/// Manual = AI asks before every write/shell operation
+/// Plan   = read-only analysis mode, never writes
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApproveMode {
+    Auto,
+    Manual,
+    Plan,
+}
+
+impl ApproveMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ApproveMode::Auto => "AUTO",
+            ApproveMode::Manual => "MANUAL",
+            ApproveMode::Plan => "PLAN",
+        }
+    }
+    pub fn cycle(&self) -> Self {
+        match self {
+            ApproveMode::Auto => ApproveMode::Manual,
+            ApproveMode::Manual => ApproveMode::Plan,
+            ApproveMode::Plan => ApproveMode::Auto,
+        }
+    }
+}
+
+/// A single tool call entry stored in the Work Panel tool history.
+#[derive(Debug, Clone)]
+pub struct ToolEntry {
+    pub turn: usize,        // which conversation turn (for grouping)
+    pub tool: String,       // raw tool name (e.g. "fs.read")
+    pub display: String,    // human-readable display (e.g. "📖 src/main.rs")
+    pub ok: Option<bool>,   // None = in-flight, Some(true/false) = done
+    pub duration_ms: u64,   // elapsed from tool_call_start to tool_call_done
+    pub start: Option<std::time::Instant>, // for live elapsed calculation
+}
+
+/// A context item loaded this turn — shown in the Context tab.
+#[derive(Debug, Clone)]
+pub struct ContextItem {
+    pub label: String,      // e.g. "AGENTS.md" or "3 constraints"
+    pub kind: ContextKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContextKind {
+    File,
+    Memory,
+    Skill,
+}
+
+
 /// Current application state
 #[derive(Debug, Clone)]
 pub enum AppState {
@@ -163,6 +228,34 @@ pub struct App {
     // ── Request timer ────────────────────────────────────────────
     pub request_start: Option<std::time::Instant>,
 
+    // ── Activity strip ───────────────────────────────────────────
+    /// When the current tool call started — used to show elapsed ms in activity strip.
+    pub tool_start: Option<std::time::Instant>,
+    /// Live token accumulator during streaming — incremented per token, reset at stream end.
+    pub live_tokens: usize,
+
+    // ── Work Panel (right sidebar in wide mode) ───────────────────
+    /// Whether the work panel is visible (toggle with Ctrl+T).
+    pub work_panel_visible: bool,
+    /// Which tab is active in the work panel.
+    pub work_panel_tab: WorkPanelTab,
+    /// All tool calls this session, newest last.
+    pub tool_history: Vec<ToolEntry>,
+    /// Context items loaded this turn (files, memory, skills).
+    pub context_items: Vec<ContextItem>,
+    /// Current conversation turn counter — incremented on each Submit.
+    pub turn_count: usize,
+    /// Work panel scroll offset (tools list).
+    pub work_panel_scroll: usize,
+
+    // ── Approval mode ─────────────────────────────────────────────
+    /// Current approval mode — cycled with Ctrl+A. Always shown in footer.
+    pub approve_mode: ApproveMode,
+
+    // ── Transcript mode ───────────────────────────────────────────
+    /// When true (Ctrl+O), tool calls show expanded detail instead of compact badges.
+    pub transcript_mode: bool,
+
     // ── Context window capacity ───────────────────────────────────
     pub max_context_tokens: usize,
 
@@ -206,7 +299,7 @@ pub struct Notification {
 pub const NOTIF_TTL_SECS: u64 = 6;
 
 /// During streaming, redraw every N tokens instead of every single token.
-pub const STREAM_REDRAW_EVERY: u8 = 3;
+pub const STREAM_REDRAW_EVERY: u8 = 1;
 
 /// 所有支持的 / 命令
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
@@ -308,6 +401,16 @@ impl App {
                 .to_string(),
             message_queue: std::collections::VecDeque::new(),
             request_start: None,
+            tool_start: None,
+            live_tokens: 0,
+            work_panel_visible: true,
+            work_panel_tab: WorkPanelTab::Tools,
+            tool_history: Vec::new(),
+            context_items: Vec::new(),
+            turn_count: 0,
+            work_panel_scroll: 0,
+            approve_mode: ApproveMode::Auto,
+            transcript_mode: false,
             max_context_tokens,
             notification: None,
             override_session_id: None,
@@ -398,6 +501,7 @@ impl App {
         if let AppState::Streaming { tokens_received } = &mut self.state {
             *tokens_received += 1;
         }
+        self.live_tokens += 1;
         // Throttle: increment counter, mark dirty
         self.stream_skip_frames = self.stream_skip_frames.wrapping_add(1);
         self.cache_dirty = true;
@@ -451,6 +555,7 @@ impl App {
         // Updating here would double-count when cost_update arrives.
         self.state = AppState::Idle;
         self.stream_skip_frames = 0;
+        self.live_tokens = 0;
         self.cache_dirty = true;
         self.request_start = None; // clear timer
 
@@ -601,6 +706,62 @@ impl App {
     /// Invalidate the render cache. Call after any message mutation.
     pub fn invalidate_cache(&mut self) {
         self.cache_dirty = true;
+    }
+
+    // ── Tool history (Work Panel) ────────────────────────────────────────────
+
+    /// Record the start of a tool call in the tool history.
+    pub fn push_tool_start(&mut self, tool: String, display: String) {
+        self.tool_history.push(ToolEntry {
+            turn: self.turn_count,
+            tool,
+            display,
+            ok: None,
+            duration_ms: 0,
+            start: Some(std::time::Instant::now()),
+        });
+        // Keep history bounded to last 200 entries
+        if self.tool_history.len() > 200 {
+            self.tool_history.remove(0);
+        }
+    }
+
+    /// Mark the most recent in-flight tool call as done.
+    pub fn finish_tool(&mut self, ok: bool) {
+        for entry in self.tool_history.iter_mut().rev() {
+            if entry.ok.is_none() {
+                entry.ok = Some(ok);
+                entry.duration_ms = entry
+                    .start
+                    .map(|t| t.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                entry.start = None;
+                break;
+            }
+        }
+    }
+
+    /// Add or update a context item (file/memory/skill loaded this turn).
+    pub fn set_context_item(&mut self, label: String, kind: ContextKind) {
+        // Replace if same label exists, otherwise append
+        if let Some(existing) = self.context_items.iter_mut().find(|c| c.label == label) {
+            existing.kind = kind;
+        } else {
+            self.context_items.push(ContextItem { label, kind });
+        }
+    }
+
+    /// Clear context items (called at start of each new turn).
+    pub fn clear_context_items(&mut self) {
+        self.context_items.clear();
+    }
+
+    /// Number of tool calls in the current turn.
+    pub fn tools_this_turn(&self) -> usize {
+        self.tool_history
+            .iter()
+            .filter(|e| e.turn == self.turn_count)
+            .count()
     }
 
     /// Read the last `n` lines from the log file into `debug_log_lines`.

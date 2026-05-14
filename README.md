@@ -259,6 +259,44 @@ evocli/
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, build, test, code style, PR process |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
+---
+
+## Architecture Data Flow / 架构数据流向图
+
+The diagram below maps every layer of EvoCLI — from key press to LLM response — including all branch points, state transitions, and file references.
+
+> **[🔍 Open Interactive Diagram (中英双语)](https://htmlpreview.github.io/?https://github.com/bambooqj/evocli/blob/main/docs/dataflow.html)** — hover nodes to trace data flow, click to expand `file:line` references, toggle layers.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  L1 用户输入        L2 流分发          L3 Python Soul     L4 Agent循环       │
+│  User Input         Stream Dispatch    Entry               Exec Loop          │
+│                                                                               │
+│  键盘事件           bridge.call_       router.dispatch()  for iter in        │
+│  KeyEvent     ───▶  stream()     ───▶  run_agent_   ───▶  max_auto_iters:   │
+│                     JSON-RPC           stream_body         LLM call           │
+│  Enter ──▶ Submit   stdout/stdin       ↓                   ↓                 │
+│  IME guard          ↓                  意图分类             工具调用           │
+│  KeyEventKind       StreamChunk        Intent Classify      _execute_tool()   │
+│  ::Press only       ::Text → TUI       8 intents            Python/Rust路由   │
+│                     ::Event → State    ↓                   ↓                 │
+│                                        上下文构建           断路器 circuit    │
+│                                        context_engine       breaker (3次)     │
+│                                                             ↓                 │
+│  L5 记忆层          L6 审批门          AppState:           task_complete?    │
+│  Memory             Gates              Idle→Thinking        ↙       ↘        │
+│                                        →Streaming           继续     退出     │
+│  memory_recall()    WaitingApproval    →CallingTool                          │
+│  LanceDB vector     WaitingChoice      →WaitingApproval                      │
+│  JSONL fallback     user: y/n          →Idle                                 │
+│  P1/P2/P3 priority  user: 1-9                                                │
+│  memory_distill ─▶  evolution_engine                                         │
+│  (background)       (PrefixSpan)                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+[Full interactive diagram with hover/click](https://htmlpreview.github.io/?https://github.com/bambooqj/evocli/blob/main/docs/dataflow.html) | [Source](docs/dataflow.html)
+
 ## Contributing
 
 Contributions are welcome — bug fixes, new features, documentation, new skills.
