@@ -251,7 +251,7 @@ def _extract_tool_sequences(events: list[dict]) -> list[list[dict]]:
                     pass  # 保留到失败前的序列
                 sessions[sid] = []  # 重置
 
-        elif ev_type in ("error", "skill_failed", "test_failed"):
+        elif ev_type in ("error", "skill_failed", "test_failed", "give_up"):
             # 错误发生 → 截断
             if sid in sessions and len(sessions[sid]) >= MIN_FLOW_LENGTH:
                 pass  # 保留已有的良好序列
@@ -620,7 +620,7 @@ class FlowTrigger:
             candidates = [
                 f for f in self._flows
                 if not f.trigger_tags or bool(set(f.trigger_tags) & intent_tags)
-                if f.confidence >= 0.35  # 极低置信度的流不触发
+                if f.confidence >= 0.35 and getattr(f, 'success_rate', 1.0) >= 0.50  # 极低置信度/失败率的流不触发
             ]
         except Exception:
             candidates = self._flows

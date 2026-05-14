@@ -88,7 +88,7 @@ class MemoryDistiller:
         for ev in events:
             ev_type = ev.get("type", "")
             current.append(ev)
-            if ev_type in ("skill_failed", "test_failed", "error"):
+            if ev_type in ("skill_failed", "test_failed", "error", "give_up"):
                 if current:
                     chains.append(list(current))
                 current = []
@@ -135,4 +135,3 @@ class MemoryDistiller:
             "tags":    ["failure", "lesson"] + list(dict.fromkeys(actions[:2])),
             "outcome": "failure",
         }
-

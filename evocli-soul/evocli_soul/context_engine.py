@@ -450,7 +450,15 @@ class ContextEngine:
         elif remaining > 128 and _compact_symbols and not params.get("skip_repomap", False):
             try:
                 await _progress("📊 提炼项目符号导航…")
-                repo_map_text = await _build_compact_symbol_nav(project_id or ".", min(BUDGET_REPOMAP, remaining))
+                # Use session_root as nav root — never "." (would scan CWD which may be dist/)
+                # project_id is already normalized by _norm_pid; use get_session_root() as fallback.
+                try:
+                    from evocli_soul.state import get_session_root as _get_sr
+                    _nav_root = (project_id if (project_id and project_id not in (".", "global", ""))
+                                 else _get_sr())
+                except Exception:
+                    _nav_root = project_id or "."
+                repo_map_text = await _build_compact_symbol_nav(_nav_root, min(BUDGET_REPOMAP, remaining))
                 if repo_map_text:
                     used = _count_tokens(repo_map_text)
                     remaining -= used

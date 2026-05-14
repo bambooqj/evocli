@@ -348,7 +348,21 @@ async def run_agent_stream_body(
     try:
         from evocli_soul.agent import EvoCLIAgent, _PROVIDER_ENV
         cfg = state.get_config()
+        # Memory: try ready-check first (non-blocking), then brief async wait.
+        # Background prewarm (main.py) loads the 570MB fastembed model — takes
+        # 15-60s on first run. Brief wait gives it a window to finish without
+        # blocking the main loop on cold starts.
         memory = _st.get_memory_if_ready()
+        if memory is None:
+            import asyncio as _mem_asyncio
+            for _mem_attempt in range(6):   # wait up to 3s (6 × 0.5s)
+                await _mem_asyncio.sleep(0.5)
+                memory = _st.get_memory_if_ready()
+                if memory is not None:
+                    log.debug("memory became ready after %.1fs", (_mem_attempt + 1) * 0.5)
+                    break
+            if memory is None:
+                log.debug("memory not ready after 3s — proceeding without memory context")
 
         # ── Intent classification — BEFORE agent creation and API key check ──────
         # Must run first so require_confirm gate can fire before any other logic.

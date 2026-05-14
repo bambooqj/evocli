@@ -506,13 +506,43 @@ class LLMClient:
         }
 
         log.debug("stream: tier=%s tokens=%d", resolved, max_tokens)
-        try:
-            response = await self._router.acompletion(**kwargs)
-        except Exception as e:
-            # Surface the error as a readable chunk then stop iteration,
-            # rather than letting an unhandled exception crash the handler.
-            log.warning("stream: acompletion failed (%s)", e)
-            yield f"\n\n⚠️ Stream error: {type(e).__name__}: {e}"
+        # ── Retry initial connection (streaming) ─────────────────────────────
+        # Cannot retry mid-stream (partial responses can't resume), but we CAN
+        # retry the initial acompletion() call that establishes the stream.
+        # Covers: 429 rate-limit, transient 5xx, and connection timeouts.
+        # Based on: Cline src/core/api/retry.ts (wraps createMessage, not chunks)
+        _stream_retryable = (
+            "rate limit", "ratelimit", "rate_limit",
+            "timeout", "timed out", "connection", "connect",
+            "502", "503", "529", "overloaded", "capacity",
+        )
+        import asyncio as _st_asyncio
+        response = None
+        for _st_attempt in range(1, self._max_retries + 2):
+            try:
+                response = await self._router.acompletion(**kwargs)
+                break
+            except Exception as _st_e:
+                _st_err = str(_st_e).lower()
+                _st_retryable = any(m in _st_err for m in _stream_retryable)
+                if _st_attempt <= self._max_retries and _st_retryable:
+                    try:
+                        from evocli_soul.rpc import emit_event as _st_ev
+                        await _st_ev("soul_status", {
+                            "status": "loading",
+                            "message": (
+                                f"Retrying stream {_st_attempt}/{self._max_retries}, "
+                                f"waiting {self._retry_after}s\u2026"
+                            ),
+                        })
+                    except Exception:
+                        pass
+                    await _st_asyncio.sleep(self._retry_after)
+                else:
+                    log.warning("stream: acompletion failed (%s)", _st_e)
+                    yield f"\n\n⚠️ Stream error: {type(_st_e).__name__}: {_st_e}"
+                    return
+        if response is None:
             return
         try:
             async for chunk in response:
@@ -555,10 +585,39 @@ class LLMClient:
     ) -> AsyncGenerator[str, None]:
         """Streaming completion with full message list. Uses Router for retries/fallback."""
         resolved = model if model else self._resolve_model(hint=tier, task_context=task_context)
-        response = await self._router.acompletion(
-            model=resolved, messages=messages,
-            max_tokens=max_tokens, temperature=temperature, stream=True,
+        # Retry initial stream connection (same pattern as stream())
+        _sm_kwargs: dict[str, Any] = {
+            "model": resolved, "messages": messages,
+            "max_tokens": max_tokens, "temperature": temperature, "stream": True,
+        }
+        _sm_retryable = (
+            "rate limit", "ratelimit", "rate_limit", "timeout", "timed out",
+            "connection", "connect", "502", "503", "529", "overloaded",
         )
+        import asyncio as _sm_asyncio
+        response = None
+        for _sm_attempt in range(1, self._max_retries + 2):
+            try:
+                response = await self._router.acompletion(**_sm_kwargs)
+                break
+            except Exception as _sm_e:
+                _sm_err = str(_sm_e).lower()
+                _sm_retry = any(m in _sm_err for m in _sm_retryable)
+                if _sm_attempt <= self._max_retries and _sm_retry:
+                    try:
+                        from evocli_soul.rpc import emit_event as _sm_ev
+                        await _sm_ev("soul_status", {
+                            "status": "loading",
+                            "message": f"Retrying {_sm_attempt}/{self._max_retries}\u2026",
+                        })
+                    except Exception:
+                        pass
+                    await _sm_asyncio.sleep(self._retry_after)
+                else:
+                    log.warning("stream_messages: acompletion failed (%s)", _sm_e)
+                    return
+        if response is None:
+            return
         async for chunk in response:
             text = chunk.choices[0].delta.content or "" if chunk.choices else ""
             if text:
