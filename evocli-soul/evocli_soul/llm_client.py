@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 import litellm
 from litellm import Router
@@ -47,7 +47,12 @@ class LLMClient:
     原生支持重试/fallback/负载均衡，无需手写 PROVIDER_PREFIXES 映射。
     """
 
-    def __init__(self, config: dict | None = None):
+    def __init__(self, config: dict[str, Any] | None = None):
+        # Preserve caller-supplied params before potentially overriding with disk config.
+        # This ensures test configs and programmatic overrides always take precedence
+        # for runtime-tunable values (max_retries, retry_after, etc.).
+        _caller_params = (config or {}).get("params", {}) if config else {}
+
         # If no config provided (or empty), auto-load from ~/.evocli/config.toml
         self._config = config or {}
         if not self._config or not self._config.get("api_key"):
@@ -63,10 +68,13 @@ class LLMClient:
             self._ensure_api_key(api_key)
 
         # ── Read global params from config (Rust is ground truth) ─────────
-        _params = self._config.get("params", {})
+        # Caller-supplied params take precedence over disk-loaded config.
+        _disk_params = self._config.get("params", {})
+        _params = {**_disk_params, **_caller_params}  # caller wins on conflict
         self._default_max_tokens = int(_params.get("max_tokens", 4096))
         self._default_temperature = float(_params.get("temperature", 0.7))
         self._max_retries = int(_params.get("max_retries", 3))
+        self._retry_after = int(_params.get("retry_after", 5))
 
         # ── Task routing: [llm.tasks] section ─────────────────────────────
         self._tasks = self._config.get("tasks", {})
@@ -106,7 +114,7 @@ class LLMClient:
                  self._base_url or "(default)", "on" if self._use_prompt_cache else "off")
 
     @staticmethod
-    def _load_config_from_disk() -> dict:
+    def _load_config_from_disk() -> dict[str, Any]:
         """Load LLM config from config.toml files with project-local override.
 
         Merge order (highest priority wins):
@@ -123,9 +131,10 @@ class LLMClient:
             try:
                 import tomllib
             except ImportError:
-                import tomli as tomllib  # type: ignore[no-redef]
+                import importlib as _importlib
+                tomllib = _importlib.import_module("tomli")
 
-            def _read_toml(path: Path) -> dict:
+            def _read_toml(path: Path) -> dict[str, Any]:
                 if not path.exists():
                     return {}
                 try:
@@ -141,7 +150,7 @@ class LLMClient:
             # Deep-merge: project overrides global at the llm section level.
             # For nested dicts (llm.roles, llm.tasks, llm.params) we merge keys
             # so project can override individual roles without clobbering others.
-            def _deep_merge(base: dict, override: dict) -> dict:
+            def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
                 result = dict(base)
                 for k, v in override.items():
                     if k in result and isinstance(result[k], dict) and isinstance(v, dict):
@@ -168,9 +177,9 @@ class LLMClient:
             log.debug("LLMClient: config load failed: %s", e)
             return {}
 
-    def _build_router_model_list(self, api_key: str | None) -> list[dict]:
+    def _build_router_model_list(self, api_key: str | None) -> list[dict[str, Any]]:
         """Build litellm.Router model list from config."""
-        common_params: dict = {}
+        common_params: dict[str, Any] = {}
         if self._base_url:
             common_params["api_base"] = self._base_url
         if api_key:
@@ -198,7 +207,51 @@ class LLMClient:
         if env_var and not os.environ.get(env_var):
             os.environ[env_var] = key
 
-    def _with_cache_control(self, messages: list[dict]) -> list[dict]:
+    async def _acompletion_with_retry_events(self, **kwargs):
+        """Wrap Router.acompletion with soul_status events on retryable failures.
+
+        LiteLLM Router retries internally but silently. This wrapper emits a
+        soul_status "Retrying N/M..." event so the user sees feedback instead
+        of a frozen spinner. Based on Cline's retry status pattern.
+
+        Only retryable errors (rate-limit, timeout, 5xx) trigger events.
+        Auth errors and bad-request errors re-raise immediately.
+        """
+        import asyncio as _asyncio
+
+        _RETRYABLE_MARKERS = (
+            "rate limit", "ratelimit", "rate_limit",
+            "timeout", "timed out",
+            "connection", "connect",
+            "502", "503", "529",
+            "overloaded", "capacity", "busy",
+        )
+
+        for _attempt in range(1, self._max_retries + 2):
+            try:
+                return await self._router.acompletion(**kwargs)
+            except Exception as _e:
+                _err_lower = str(_e).lower()
+                _is_retryable = any(m in _err_lower for m in _RETRYABLE_MARKERS)
+                if _attempt <= self._max_retries and _is_retryable:
+                    try:
+                        from evocli_soul.rpc import emit_event as _retry_ev
+                        await _retry_ev("soul_status", {
+                            "status":  "loading",
+                            "message": (
+                                f"Retrying {_attempt}/{self._max_retries}, "
+                                f"waiting {self._retry_after}s\u2026 "
+                                f"({type(_e).__name__})"
+                            ),
+                        })
+                    except Exception:
+                        pass
+                    await _asyncio.sleep(self._retry_after)
+                else:
+                    raise
+        raise RuntimeError("_acompletion_with_retry_events: unreachable")
+
+    def _with_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Add Anthropic cache_control to the system message when prompt caching is enabled.
 
         Anthropic prompt caching rules:
@@ -229,7 +282,7 @@ class LLMClient:
                 result.append(msg)
         return result
 
-    def _resolve_model(self, hint: str = "auto", task_context: dict | None = None) -> str:
+    def _resolve_model(self, hint: str = "auto", task_context: dict[str, Any] | None = None) -> str:
         """
         返回 Router model group alias ("fast" or "smart").
         研究: 保留此方法供旧调用路径使用，但现在只是返回 group alias
@@ -275,7 +328,7 @@ class LLMClient:
         }
         return self._tasks.get(task_name, _TASK_DEFAULTS.get(task_name, "fast"))
 
-    def get_task_params(self, task_name: str) -> dict:
+    def get_task_params(self, task_name: str) -> dict[str, Any]:
         """Get max_tokens and temperature for a named task from [llm.params.<task>] config.
 
         Returns a dict with keys 'max_tokens' and 'temperature', falling back
@@ -300,7 +353,7 @@ class LLMClient:
         prompt: str,
         *,
         system: str | None = None,
-        extra_params: dict | None = None,
+        extra_params: dict[str, Any] | None = None,
     ) -> str:
         """Complete a prompt for a named task, reading ALL parameters from config.
 
@@ -360,7 +413,7 @@ class LLMClient:
         system: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        task_context: dict | None = None,
+        task_context: dict[str, Any] | None = None,
     ) -> str:
         """
         Non-streaming completion. Returns full text.
@@ -378,7 +431,7 @@ class LLMClient:
 
         # litellm.Router.acompletion() — 研究: 替代手写 litellm.acompletion()
         # Router 处理: 重试、provider fallback、负载均衡（无需自写逻辑）
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "model":       resolved,   # Router group alias ("fast"/"smart")
             "messages":    messages,
             "max_tokens":  max_tokens,
@@ -387,15 +440,15 @@ class LLMClient:
 
         log.debug("complete: tier=%s model=%s tokens=%d", tier, resolved, max_tokens)
         try:
-            response = await self._router.acompletion(**kwargs)
+            response = await self._acompletion_with_retry_events(**kwargs)
         except litellm.ContextWindowExceededError:
             log.warning("Context window exceeded, truncating input by 50%%...")
             messages[-1]["content"] = prompt[:len(prompt)//2] + "\n...[truncated]"
-            response = await self._router.acompletion(**kwargs)
+            response = await self._acompletion_with_retry_events(**kwargs)
         except Exception as e:
             if "context" in str(e).lower() or "length" in str(e).lower() or "tokens" in str(e).lower():
                 messages[-1]["content"] = prompt[:len(prompt)//2] + "\n...[truncated]"
-                response = await self._router.acompletion(**kwargs)
+                response = await self._acompletion_with_retry_events(**kwargs)
             else:
                 raise
         text = response.choices[0].message.content or ""
@@ -433,7 +486,7 @@ class LLMClient:
         system: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        task_context: dict | None = None,
+        task_context: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming completion. Yields text chunks."""
         resolved = model if model else self._resolve_model(hint=tier, task_context=task_context)
@@ -444,7 +497,7 @@ class LLMClient:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "model":       resolved,
             "messages":    messages,
             "max_tokens":  max_tokens,
@@ -474,17 +527,17 @@ class LLMClient:
 
     async def complete_messages(
         self,
-        messages: list[dict],
+        messages: list[Any],
         *,
         tier: str = "smart",
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        task_context: dict | None = None,
+        task_context: dict[str, Any] | None = None,
     ) -> str:
         """Completion with full message list (for agent use). Uses Router for retries/fallback."""
         resolved = model if model else self._resolve_model(hint=tier, task_context=task_context)
-        response = await self._router.acompletion(
+        response = await self._acompletion_with_retry_events(
             model=resolved, messages=messages,
             max_tokens=max_tokens, temperature=temperature,
         )
@@ -492,13 +545,13 @@ class LLMClient:
 
     async def stream_messages(
         self,
-        messages: list[dict],
+        messages: list[Any],
         *,
         tier: str = "smart",
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        task_context: dict | None = None,
+        task_context: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Streaming completion with full message list. Uses Router for retries/fallback."""
         resolved = model if model else self._resolve_model(hint=tier, task_context=task_context)

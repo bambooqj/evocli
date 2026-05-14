@@ -502,6 +502,44 @@ async def run_agent_stream_body(
             _intent_profile.writes_allowed,
         )
 
+        # ── Require-confirm gate (SECURITY — risky intent) ────────────────────────
+        # IntentProfile.require_confirm=True for "risky" intents (mass deletes,
+        # database drops, mass overwrites). Surface the risk and require an
+        # explicit "yes" prefix before the agent executes anything.
+        #
+        # UX (Option A — re-send pattern, no new RPC handler needed):
+        #   1. Prompt WITHOUT confirmation prefix → emit warning, return done=True.
+        #   2. Prompt WITH prefix → strip it, proceed normally.
+        if _intent_profile.require_confirm:
+            _CONFIRM_PREFIXES = ("yes ", "yes,", "确认", "confirm ", "y ")
+            _user_confirmed = any(prompt.lower().startswith(p) for p in _CONFIRM_PREFIXES)
+            if not _user_confirmed:
+                _confirm_msg = (
+                    f"⚠️ **Confirmation required**\n\n"
+                    f"This request was classified as **{_intent_profile.intent}** "
+                    f"({_intent_profile.reason}).\n"
+                    f"It may involve destructive or irreversible operations "
+                    f"(deleting files, dropping data, mass overwrites).\n\n"
+                    f"**To proceed**, resend your message with `yes` at the start:\n\n"
+                    f"```\nyes {prompt[:120]}{'…' if len(prompt) > 120 else ''}\n```\n\n"
+                    f"Or rephrase to make your intent more specific and less destructive."
+                )
+                await send.stream_chunk(req_id, _confirm_msg, done=True)
+                log.info(
+                    "require_confirm: blocked risky request (intent=%s session=%s)",
+                    _intent_profile.intent, session_id[:12],
+                )
+                return
+            # User confirmed — strip the prefix before proceeding
+            for _pfx in _CONFIRM_PREFIXES:
+                if prompt.lower().startswith(_pfx):
+                    prompt = prompt[len(_pfx):].lstrip()
+                    break
+            log.info(
+                "require_confirm: user confirmed risky intent (intent=%s session=%s)",
+                _intent_profile.intent, session_id[:12],
+            )
+
         # Profile overrides config values — profile is goal-aware, config is a global ceiling
         _cfg_max = int(_cfg_agent.get("max_auto_iterations", cfg_int("agent.max_auto_iterations")))
         _max_auto_iters       = min(_intent_profile.max_iterations, _cfg_max)
@@ -520,6 +558,8 @@ async def run_agent_stream_body(
 
         # Clear stale task_complete from any previous request
         _st.clear_task_complete(session_id)
+        # Clear any stale cancel signal from a previous request
+        _st.clear_cancel(session_id)
 
         # ── Auto-snapshot before risky tasks (Aider safety pattern) ──────────
         # Use intent profile to decide — no more keyword guessing.
@@ -589,6 +629,11 @@ async def run_agent_stream_body(
 
             # Reset tool count tracker for this iteration
             _st.reset_iteration_tool_count(session_id)
+            # ── Cancellation check (Cline while-not-abort pattern) ────────────────
+            if _st.is_cancelled(session_id):
+                log.info("auto-loop: cancelled by user at iteration %d", _auto_iter)
+                await send.stream_chunk(req_id, "\n\n⛔ **Task cancelled.**\n", done=True)
+                return
             # Gemini scratchpad: mark new iteration boundary
             try:
                 from evocli_soul.state import new_scratchpad_iteration as _nsi
@@ -640,8 +685,13 @@ async def run_agent_stream_body(
                         _prior = _prior_raw
 
             try:
+                # ── Context params: first iteration only (Cline includeFileDetails pattern) ──
+                # context_params drives expensive operations: anchor context build, file reads.
+                # On iter 0: pass full context_params to orient the LLM.
+                # On iter 1+: pass {} — LLM already has context in accumulated history.
+                _iter_context_params = _context_params if _is_first_iter else {}
                 async for chunk in agent.stream(_current_prompt,
-                                                 context_params=_context_params,
+                                                 context_params=_iter_context_params,
                                                  prior_history=_prior,
                                                  session_id=session_id):
                     if chunk:

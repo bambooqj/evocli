@@ -455,6 +455,19 @@ class AgentLiteLLMMixin:
                 continue
             choice = chunk.choices[0]
             delta = choice.delta if hasattr(choice, 'delta') else None
+            # ── Thinking / reasoning tokens (Claude 3.7, Gemini 2.5) ──────────
+            # Some models emit reasoning_content or thinking on the delta before
+            # the final answer. Cline pattern: check ThinkingDelta.reasoning_content
+            # We yield as italicised text so it's visually distinct.
+            if delta:
+                _reasoning = (
+                    getattr(delta, "reasoning_content", None)
+                    or getattr(delta, "thinking", None)
+                    or ""
+                )
+                if _reasoning:
+                    yield f"*{_reasoning}*"
+                    text_yielded = True
             text = (delta.content or "") if delta else ""
             if text:
                 yield text

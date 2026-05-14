@@ -185,6 +185,27 @@ def get_tool_failure_count(session_id: str) -> int:
 _recent_tool_calls: dict[str, list[dict[str, object]]] = {}  # session_id → [{tool, args_hash, ts}]
 
 
+# ── Cancellation flag (keyed by session_id) ──────────────────────────────────
+# Set externally (Ctrl+C handler or cancel RPC) to signal the autonomous loop
+# should abort at its next iteration boundary.
+_cancelled: _LRUSessionCache = _make_session_cache()
+
+
+def cancel_session(session_id: str) -> None:
+    """Signal that the running task for this session should abort."""
+    _cancelled[session_id] = True
+
+
+def clear_cancel(session_id: str) -> None:
+    """Clear the cancel flag. Called at the start of every new request."""
+    _cancelled.pop(session_id, None)
+
+
+def is_cancelled(session_id: str) -> bool:
+    """Return True if cancel_session() has been called for this session."""
+    return bool(_cancelled.get(session_id, False))
+
+
 def record_tool_call(tool: str, args: dict[str, object], session_id: str = "default") -> None:
     """Record a tool call for doom loop detection."""
     import json
@@ -395,12 +416,19 @@ def _load_history_from_disk(session_id: str) -> list[dict]:
 
 
 def _save_history_to_disk(session_id: str, history: list[dict]) -> None:
-    """Persist history to disk (best-effort — never raises)."""
+    """Persist history to disk atomically (best-effort — never raises).
+
+    Uses write-to-temp + os.replace() so a crash mid-write cannot produce
+    a truncated/corrupt history file (Cline atomic write pattern).
+    os.replace() is atomic on POSIX and same-volume Windows.
+    """
     import json
     try:
         path = _history_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(history, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_path, path)
     except Exception:
         pass
 
@@ -809,3 +837,4 @@ def reset_all() -> None:
     _current_turns.clear()
     _added_files.clear()
     _recent_tool_calls.clear()
+    _cancelled.clear()
