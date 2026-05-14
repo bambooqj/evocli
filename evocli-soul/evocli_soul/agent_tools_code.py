@@ -132,6 +132,59 @@ def register(agent, _sc, _call_handler, _sid, _json, bridge=None, config=None, m
             }, ensure_ascii=False)
         except Exception as e:
             return _json.dumps({"error": str(e), "query": query}, ensure_ascii=False)
+
+    @agent.tool_plain
+    async def experience_lookup(task_description: str) -> str:
+        """Look up past experience and proven workflows for a similar task.
+
+        Call this when you want to check if there is a proven pattern from
+        past successful (and sometimes failed) work on similar tasks.
+        Only useful for complex multi-step coding tasks — not for questions
+        or simple lookups.
+
+        Returns: matched flow name, steps, and success rate if found,
+                 or empty if no relevant past experience exists.
+
+        Example: experience_lookup("fix a bug in a Rust module with tests")
+        """
+        try:
+            from evocli_soul.tool_flow_miner import check_flow_trigger
+            matched_flow, score = check_flow_trigger(task_description)
+
+            if not matched_flow:
+                return _json.dumps({
+                    "found": False,
+                    "message": "No matching past experience found.",
+                }, ensure_ascii=False)
+
+            success_rate = getattr(matched_flow, "success_rate", 0.0)
+            failures_before = getattr(matched_flow, "failures_before", 0)
+            steps = [
+                {"step": i + 1, "tool": s.tool,
+                 "description": getattr(s, "description", s.tool)}
+                for i, s in enumerate(matched_flow.steps[:8])
+            ]
+            struggle_note = (
+                f"Discovered after {failures_before} failed attempts — "
+                f"battle-tested knowledge."
+                if failures_before >= 1 else
+                "First-try success pattern."
+            )
+            return _json.dumps({
+                "found": True,
+                "name": matched_flow.name,
+                "similarity": round(score, 2),
+                "success_rate": round(success_rate, 2),
+                "failures_before": failures_before,
+                "note": struggle_note,
+                "steps": steps,
+                "guidance": (
+                    "This pattern comes from real past work. "
+                    "Use it as a reference and adapt to current context."
+                ),
+            }, ensure_ascii=False)
+        except Exception as e:
+            return _json.dumps({"error": str(e)}, ensure_ascii=False)
     
     # ── GitNexus-inspired knowledge graph tools ──────────────────────
     @agent.tool_plain

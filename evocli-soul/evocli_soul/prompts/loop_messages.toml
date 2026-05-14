@@ -1,5 +1,10 @@
 # EvoCLI autonomous loop messages
 # Override by copying to ~/.evocli/prompts/loop_messages.toml
+#
+# Design principle (Claude Code / Cline pattern):
+#   Provide STATE, not DIRECTIVES.
+#   The LLM decides what to do with the state information.
+#   Code provides context; LLM exercises judgment.
 
 [status]
 loading_context = "⚙ 正在构建上下文…"
@@ -58,18 +63,22 @@ task_complete_banner = "\n\n---\n✅ **任务完成**\n\n{result}\n"
 auto_commit = "💾 **自动提交**: `{message}`{hash_suffix}\n"
 
 [loop]
-# Injected when agent produces 0 tool calls but hasn't called task_complete
-# Set to empty string "" to disable the forcing behavior entirely
+# Loop state messages — provide STATE, not DIRECTIVES.
+# The LLM decides what to do; code only provides current situation.
+# Based on: Claude Code noToolsUsed() pattern, Cline loop-status injection.
+#
+# When LLM produced text only (no tool calls):
+# Claude Code equivalent: "If you haven't finished the task, continue working."
 forcing_message = """
-The previous response was text-only. If you have a concrete task to execute, use tools now.
-If the task is already complete or this was a conversational exchange, call `task_complete` to wrap up.
+[Loop state: previous turn had no tool calls]
+If the task requires further action, continue. If complete, call task_complete.
 """
 
-# Injected between iterations when todos remain
-continuation_with_todos = "Continue. {pending_count} todo items remain. Check with `todo_read`, then call `task_complete` when done."
+# Between iterations when todos remain — state only, no directive:
+continuation_with_todos = "[Loop state: {pending_count} todo items still pending]"
 
-# Injected between iterations when no todos
-continuation_clean = "Continue. Verify the work is complete, then call `task_complete`."
+# Between iterations when no todos:
+continuation_clean = "[Loop state: continuing]"
 
 # Injected on last iteration
-last_iteration = "Final step ({current}/{max}). Summarize completed work and call `task_complete`. List Next Steps for anything unfinished."
+last_iteration = "[Loop state: final iteration {current}/{max}] Call task_complete to finish, or give_up if unable to complete."

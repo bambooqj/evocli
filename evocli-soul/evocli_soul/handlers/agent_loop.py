@@ -454,80 +454,12 @@ async def run_agent_stream_body(
         # The chunk is styled as a status line that will be replaced by actual response.
         await send.stream_chunk(req_id, "", done=False)  # unlock TUI timer immediately
 
-        # ── ToolFlow 触发检查（在 LLM 调用前）────────────────────────────────
-        # 检查用户意图是否匹配已学习的工具流
-        # 高置信度(≥0.70)→ 询问是否执行；中置信度(0.45-0.70)→ 告知有工具流可用
-        try:
-            from evocli_soul.tool_flow_miner import (
-                check_flow_trigger, FlowExecutor,
-                AUTO_EXECUTE_THRESH, SUGGEST_THRESH,
-            )
-            _matched_flow, _flow_score = check_flow_trigger(prompt)
-            _flow_success_rate = getattr(_matched_flow, "success_rate", 0.0) if _matched_flow else 0.0
-
-            # ── Voyager 模式：流作为 LLM 的记忆提示，而非执行脚本 ────────────────
-            # 参考：Voyager (2023), ReWOO (2023), DEPS (2023)
-            #
-            # 触发条件（三层过滤，缺一不可）：
-            # 1. Intent 必须是"执行型"任务 — coder/debugger/risky
-            #    chat/question/researcher/planner/reviewer 不需要工具流提示：
-            #    - chat/question: 单轮对话，根本不需要多步骤工具流
-            #    - researcher/planner: 读写较少，流提示是噪声
-            #    - reviewer: 只读分析，不需要执行模式参考
-            # 1. Intent 必须是"执行型"任务 — coder/debugger/risky
-            # 2. 流的步骤数 >= 3 — 少于 3 步的"流"是琐碎操作，不值得提示
-            # 3. success_rate >= 0.60 — 这个模式有足够的历史验证
-            # 4. 必须是"挣扎后发现"的流 (failures_before >= 1)
-            #    理由：第一次就成功的模式可能只是运气，或者太简单不值得作为模式提示。
-            #    真正有价值的是：失败→思考→再失败→找到方法→成功 这类硬得来的经验。
-            _FLOW_EXEC_INTENTS = {"coder", "debugger", "risky"}   # 只有执行型任务才注入
-            _FLOW_MIN_STEPS    = 3                                  # 最少 3 步才算有价值的模式
-            _FLOW_HINT_THRESH  = 0.60                               # 最少 60% 成功率
-
-            _flow_steps_count      = len(getattr(_matched_flow, "steps", [])) if _matched_flow else 0
-            _flow_failures_before  = getattr(_matched_flow, "failures_before", 0) if _matched_flow else 0
-            _flow_is_struggle      = _flow_failures_before >= 1   # 至少失败过一次才算"挣扎后发现"
-
-            _flow_eligible = (
-                _matched_flow is not None
-                and _flow_score >= SUGGEST_THRESH
-                and _flow_success_rate >= _FLOW_HINT_THRESH
-                and _flow_steps_count >= _FLOW_MIN_STEPS
-                and _intent_profile_early.intent in _FLOW_EXEC_INTENTS
-                and _flow_is_struggle     # 核心门控：必须是挣扎后摸索出来的经验
-            )
-
-            if _flow_eligible:
-                # 构建 Voyager 风格的记忆提示：展示这是"硬得来"的经验，有说服力
-                _steps_desc = "\n".join(
-                    f"  {i+1}. {s.tool}"
-                    + (f"  # {s.description}" if getattr(s, "description", "") else "")
-                    for i, s in enumerate(_matched_flow.steps[:8])
-                )
-                _struggle_ctx = (
-                    f"经过 {_flow_failures_before} 次失败后摸索出的方案"
-                    if _flow_failures_before >= 2
-                    else "经过失败后摸索出的方案"
-                )
-                _flow_memory_hint = (
-                    f"\n\n---\n"
-                    f"🔖 **历史经验参考** ({_struggle_ctx}，成功率 {_matched_flow.success_rate:.0%})\n"
-                    f"**{_matched_flow.name}** — 类似任务最终成功使用的工具序列：\n"
-                    f"{_steps_desc}\n"
-                    f"*此模式来自真实失败-成功循环，可参考但需根据当前上下文灵活调整。*\n"
-                    f"---\n"
-                )
-                # 将记忆提示注入为用户消息前缀（进入 LLM 的上下文窗口）
-                # 不直接执行——LLM 看到这个提示后自己决定如何行动
-                prompt = _flow_memory_hint + prompt
-                log.info(
-                    "ToolFlow struggle-hint injected: %s (similarity=%.0f%% success_rate=%.0f%% failures_before=%d)",
-                    _matched_flow.name, _flow_score * 100, _flow_success_rate * 100, _flow_failures_before,
-                )
-                # 更新: 流被"使用"了（作为提示），统计用途但不统计执行成功/失败
-                # 执行结果由后续 task_complete 的正常路径追踪
-        except Exception as _tf_err:
-            log.debug("ToolFlow trigger check failed (non-fatal): %s", _tf_err)
+        # ── ToolFlow: experience_lookup is now a tool, not forced injection ────
+        # Previously: code pre-checked flow similarity and forced a hint into the prompt.
+        # Now: LLM calls experience_lookup(task) itself when it wants past patterns.
+        # This is the LLM-native approach — code provides the tool, LLM decides when to use it.
+        # (The tool is registered in agent_tools_code.py)
+        # No pre-injection logic needed here.
 
         # ── Autonomous execution loop ─────────────────────────────────────────
         # Implements: Cline initiateTaskLoop + Gemini Plan→Act→Verify pattern.
@@ -899,32 +831,36 @@ async def run_agent_stream_body(
                         log.warning("distill_success failed (memory flywheel): %s", _dist_err)
                 break  # Clean exit from autonomous loop
 
-            # ── No task_complete: decide whether to continue ───────────────────
+            # ── No task_complete: provide loop state to LLM ───────────────────
+            # Design principle (Claude Code / Cline pattern):
+            #   Inject STATE, not DIRECTIVES. The LLM decides what to do.
+            #   "Iteration 3/8, previous turn had no tool calls" is state.
+            #   "Use tools now!" is a directive — wrong, overrides LLM judgment.
+            _current_iter_num = _auto_iter + 1  # 1-based for display
             tool_count = _st.get_iteration_tool_count(session_id)
 
             if tool_count == 0:
-                # AI produced only text — no real work this iteration
+                # LLM produced only text — track for stuck detection
                 _consecutive_no_tools += 1
                 log.debug("auto-loop iter %d: 0 tools called (%d consecutive)", _auto_iter, _consecutive_no_tools)
 
                 if _consecutive_no_tools >= _MAX_NO_TOOL_ITERS:
-                    # AI is stuck on text — exit loop gracefully
+                    # Safety exit: LLM consistently produces only text
                     log.info("auto-loop stopping: %d consecutive text-only turns", _consecutive_no_tools)
                     break
 
-                if _auto_iter + 1 < _max_auto_iters and _intent_profile.forcing_enabled:
-                    # Only inject forcing message if the intent profile allows it.
-                    # chat/question profiles have forcing_enabled=False — no bullying.
-                    _forcing = _loop_msg("loop", "forcing_message")
-                    if _forcing:
-                        _current_prompt = _forcing
+                if _auto_iter + 1 < _max_auto_iters:
+                    # Provide loop state — LLM decides how to proceed
+                    _state_msg = _loop_msg("loop", "forcing_message")
+                    if _state_msg:
+                        _current_prompt = _state_msg
             else:
                 # Tools were called — AI is making progress
                 _consecutive_no_tools = 0
                 log.debug("auto-loop iter %d: %d tools called, continuing", _auto_iter, tool_count)
 
                 if _auto_iter + 1 < _max_auto_iters:
-                    # Check remaining todos for continuation prompt
+                    # Provide minimal loop state — todos if any, else just state
                     todos = _st.get_todos(session_id)
                     pending_count = sum(1 for t in todos if t.get("status") not in ("completed", "cancelled"))
 
@@ -933,13 +869,13 @@ async def run_agent_stream_body(
                     else:
                         _current_prompt = _loop_msg("loop", "continuation_clean")
                 else:
-                    # Last iteration — force completion summary
+                    # Last iteration — inform LLM of final state
                     _current_prompt = _loop_msg(
-                        "loop",
-                        "last_iteration",
+                        "loop", "last_iteration",
                         current=_max_auto_iters,
                         max=_max_auto_iters,
                     )
+
 
         # Loop ended (task_complete, max iterations, or no-tool exit)
         if chunks_sent == 0:
