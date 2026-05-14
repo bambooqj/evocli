@@ -148,13 +148,13 @@ _PROFILES: dict[str, IntentProfile] = {
     ),
     "researcher": IntentProfile(
         intent="researcher",
-        max_iterations=3,
+        max_iterations=6,   # was 3 — research often needs more passes to explore modules
         forcing_enabled=True,
         context_depth="standard",
         writes_allowed=False,
         require_confirm=False,
         auto_commit=False,
-        description="Code exploration — short loop, standard context, read-only",
+        description="Code exploration — medium loop, standard context, read-only",
     ),
     "planner": IntentProfile(
         intent="planner",
@@ -412,15 +412,15 @@ def context_params_for(profile: IntentProfile) -> dict:
         return {
             "context_depth": "standard",
             "skip_repomap": False,
-            "skip_memory": True,
-            "skip_skills": True,
+            "skip_memory": False,   # researchers need memory — past findings are valuable
+            "skip_skills": False,   # researchers need skill guidance
             "compact_symbols": True,
             "lightweight": False,
         }
     return {
         "context_depth": "full",
-        "skip_memory": True,
-        "skip_skills": True,
+        "skip_memory": False,   # full context includes memory
+        "skip_skills": False,
         "compact_symbols": True,
         "lightweight": False,
     }

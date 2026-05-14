@@ -146,7 +146,7 @@ async def _build_compact_symbol_nav(root: str, budget: int = 512) -> str:
 
         bridge = _state.get_bridge()
         raw = await bridge.call("shell.grep", {
-            "pattern": "^(class |def |async def )",
+            "pattern": "^\\s*(class |def |async def )",
             "path": root,
             "include": ".py",
             "max_results": 200,
@@ -573,3 +573,4 @@ class ContextEngine:
             "total_tokens":  total_used,
             "slots":         slots,
         }
+

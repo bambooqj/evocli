@@ -593,6 +593,98 @@ class AgentExecutorMixin:
             except Exception as e:
                 return _elj.dumps({"error": str(e)}, ensure_ascii=False)
 
+        # ── Task planning + completion tools (Python-native, state-based) ──────────
+        # These were previously registered as @agent.tool_plain in agent_tools_code.py.
+        # With pydantic-ai removed, they are handled here so LiteLLM can call them.
+
+        if name == "todo_write":
+            import json as _tw_j
+            from evocli_soul import state as _tw_st
+            from evocli_soul.rpc import emit_event as _tw_ev
+            try:
+                todos_json = args.get("todos_json", args.get("todos", "[]"))
+                todos = _tw_j.loads(todos_json) if isinstance(todos_json, str) else todos_json
+                if not isinstance(todos, list):
+                    return _tw_j.dumps({"ok": False, "error": "todos_json must be a JSON array"})
+                normalized = [{"id": str(t.get("id", i+1)), "content": str(t.get("content", "")),
+                               "status": t.get("status", "pending"), "priority": t.get("priority", "medium")}
+                              for i, t in enumerate(todos)]
+                _tw_st.set_todos(normalized, self._session_id)
+                status_icons = {"pending": "⬜", "in_progress": "🔄", "completed": "✅", "cancelled": "❌"}
+                priority_icons = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+                lines = [f"📋 **任务计划** ({len(normalized)} 项)"]
+                for t in normalized:
+                    lines.append(f"{status_icons.get(t['status'], '⬜')} {priority_icons.get(t['priority'], '')} {t['content']}")
+                display = "\n".join(lines)
+                await _tw_ev("todo_update", {"todos": normalized, "display": display})
+                return _tw_j.dumps({"ok": True, "count": len(normalized), "display": display}, ensure_ascii=False)
+            except Exception as e:
+                return _tw_j.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+        if name == "todo_read":
+            import json as _tr_j
+            from evocli_soul import state as _tr_st
+            todos = _tr_st.get_todos(self._session_id)
+            if not todos:
+                return _tr_j.dumps({"todos": [], "hint": "No task plan yet. Use todo_write to create one."})
+            pending   = [t for t in todos if t.get("status") == "pending"]
+            in_prog   = [t for t in todos if t.get("status") == "in_progress"]
+            completed = [t for t in todos if t.get("status") == "completed"]
+            return _tr_j.dumps({
+                "todos": todos,
+                "summary": f"{len(completed)} done, {len(in_prog)} in progress, {len(pending)} pending",
+                "remaining": len(pending) + len(in_prog),
+            }, ensure_ascii=False)
+
+        if name == "task_complete":
+            import json as _tc_j
+            from evocli_soul import state as _tc_st
+            result  = args.get("result", "")
+            command = args.get("command", "")
+            # Cline double-check pattern: first call rejected, second accepted
+            if not _tc_st.is_task_double_checked(self._session_id):
+                _tc_st.mark_task_double_checked(self._session_id)
+                todos = _tc_st.get_todos(self._session_id)
+                incomplete = [t for t in todos if t.get("status") not in ("completed", "cancelled")]
+                if incomplete:
+                    items = "\n".join(f"  - [{t.get('id','')}] {t.get('content','')}" for t in incomplete)
+                    return _tc_j.dumps({"ok": False, "re_verify": True,
+                                        "message": f"⚠️ Re-verify required.\n\nIncomplete todos:\n{items}\n\nComplete all items then call task_complete again."})
+                return _tc_j.dumps({"ok": False, "re_verify": True,
+                                    "message": "⚠️ Final self-audit: read your changes, verify tests pass, confirm requirements met. Then call task_complete again."})
+            # Second call: accepted
+            _tc_st.set_task_complete(self._session_id, result, command)
+            todos = _tc_st.get_todos(self._session_id)
+            if todos:
+                for t in todos:
+                    if t.get("status") == "pending":
+                        t["status"] = "completed"
+                _tc_st.set_todos(todos, self._session_id)
+            try:
+                from evocli_soul.rpc import emit_event as _tc_ev
+                await _tc_ev("task_complete", {"result": result, "command": command})
+            except Exception:
+                pass
+            return _tc_j.dumps({"ok": True, "signal": "task_complete", "message": "✅ Task complete signal accepted. Finalizing…"}, ensure_ascii=False)
+
+        if name == "give_up":
+            import json as _gu_j
+            from evocli_soul import state as _gu_st
+            reason          = args.get("reason", "")
+            what_was_tried  = args.get("what_was_tried", "")
+            suggestion      = args.get("suggestion", "")
+            result_text = f"[WITHDRAWN] {reason}"
+            if suggestion:
+                result_text += f"\n\nSuggestion: {suggestion}"
+            _gu_st.mark_task_double_checked(self._session_id)
+            _gu_st.set_task_complete(self._session_id, result_text, "")
+            try:
+                _gu_st.append_session_event({"type": "give_up", "reason": reason, "tried": what_was_tried}, self._session_id)
+            except Exception:
+                pass
+            return _gu_j.dumps({"withdrawn": True, "reason": reason, "what_was_tried": what_was_tried,
+                                 "suggestion": suggestion or "Please clarify requirements."}, ensure_ascii=False)
+
         # ── Standard tools via Rust bridge ──────────────────────────────────────
         if name not in self._TOOL_TO_RPC:
             return f"Error: Unknown tool '{name}'"
