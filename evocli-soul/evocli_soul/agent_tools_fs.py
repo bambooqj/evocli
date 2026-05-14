@@ -9,9 +9,26 @@ from __future__ import annotations
 def register(agent, _sc, _call_handler, _sid, _json, bridge=None, config=None, memory=None):
     """Register FS and core tools on agent."""
 
+    def _skip_note(path: str, raw_error: str) -> str:
+        """Convert a file-read error into a graceful skip note."""
+        return f"[Skipped: '{path}' — {raw_error.split('] ', 1)[-1].strip()}]"
+
+    def _is_read_error(result: str) -> bool:
+        """True if the result is a file-not-found / unreadable error."""
+        return isinstance(result, str) and (
+            "cannot read" in result
+            or "not found" in result.lower()
+            or "no such file" in result.lower()
+            or "permission denied" in result.lower()
+            or result.startswith("Error:")
+        )
+
     async def fs_read(path: str) -> str:
         """Read the full contents of a file. path: absolute or relative file path."""
-        return await _sc("fs.read", {"path": path})
+        result = await _sc("fs.read", {"path": path})
+        if _is_read_error(result):
+            return _skip_note(path, result)
+        return result
     
     @agent.tool_plain
     async def fs_write(path: str, content: str) -> str:
@@ -337,7 +354,10 @@ def register(agent, _sc, _call_handler, _sid, _json, bridge=None, config=None, m
             params["start_line"] = start_line
         if end_line > 0:
             params["end_line"] = end_line
-        return await _sc("fs.read_range", params)
+        result = await _sc("fs.read_range", params)
+        if _is_read_error(result):
+            return _skip_note(path, result)
+        return result
     
     @agent.tool_plain
     async def fs_read_symbol(symbol_name: str, path: str = "", context_lines: int = 10) -> str:

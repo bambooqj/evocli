@@ -610,6 +610,23 @@ class AgentExecutorMixin:
 
             result = await self.bridge.call(rpc_method, rpc_args)
 
+            # Graceful skip for unreadable files — return a note instead of raw error.
+            # When a file doesn't exist or can't be read, the LLM should skip and continue,
+            # not get confused by an opaque error code.
+            _READ_METHODS = {"fs.read", "fs.read_range", "fs.read_symbol"}
+            if rpc_method in _READ_METHODS and isinstance(result, str):
+                _err = result.lower()
+                if ("cannot read" in _err or "not found" in _err
+                        or "no such file" in _err or "permission denied" in _err
+                        or result.startswith("Error:")):
+                    _path = rpc_args.get("path", name)
+                    # Strip the Rust error prefix for a clean note
+                    _reason = result.split("] ", 1)[-1].strip() if "] " in result else result
+                    result = f"[Skipped: '{_path}' — {_reason}]"
+                    await emit_event("tool_call_done", {"tool": rpc_method, "ok": False})
+                    log.debug("File read skipped gracefully: %s", _path)
+                    return result
+
             # C6: Duplicate file read deduplication (Cline pattern)
             # When the same file is read multiple times in a session, annotate the
             # result so the LLM knows it already saw this content. Prevents history
