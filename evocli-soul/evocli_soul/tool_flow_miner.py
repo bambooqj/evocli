@@ -106,10 +106,22 @@ class ToolFlow:
     confidence:    float = 0.5      # 初始置信度，随使用更新
     project_local: bool = False     # True = 项目本地流
 
+    # ── 挣扎标记 ──────────────────────────────────────────────────────────────
+    # 记录这个流是"第一次就成功"还是"失败多次后才摸索出来"。
+    # 后者才是真正有价值的经验（失败后积累的成功模式）。
+    # failures_before: 发现这个成功序列之前，session 里经历了几次失败重置
+    failures_before: int  = 0       # 0 = 一次成功；>= 1 = 挣扎后发现
+    struggle_score:  float = 0.0    # 挣扎程度分数，越高越难得 (failures_before / (failures_before + 1))
+
     @property
     def success_rate(self) -> float:
         total = self.success_count + self.failure_count
         return self.success_count / total if total > 0 else 0.5
+
+    @property
+    def is_struggle_discovered(self) -> bool:
+        """True if this flow was found after at least one failure — battle-tested knowledge."""
+        return self.failures_before >= 1
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -201,10 +213,14 @@ def abstract_params(tool_name: str, params: dict) -> dict:
 # 序列提取（Extract Sequences from Rich Events）
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _extract_tool_sequences(events: list[dict]) -> list[list[dict]]:
+def _extract_tool_sequences(events: list[dict]) -> list[tuple[list[dict], int]]:
     """
     从 session_events 中提取完整的工具调用序列。
-    
+
+    返回 list of (sequence, failures_before) — 其中 failures_before 记录
+    在这个成功序列被发现之前，同一 session 经历了几次失败重置。
+    failures_before >= 1 表示"挣扎后发现"的经验，比一次成功更有价值。
+
     每个工具调用被表示为：
     {
         "tool": "fs_read_range",   # python 函数名
@@ -213,12 +229,13 @@ def _extract_tool_sequences(events: list[dict]) -> list[list[dict]]:
         "ok": True,
         "result_summary": "content(150 chars)",
     }
-    
+
     按 session_id 分组，提取连续的成功工具调用序列。
-    遇到 error/failure 则截断当前序列。
+    遇到 error/failure 则截断当前序列，并记录一次"失败"计数。
     """
     sessions: dict[str, list[dict]] = {}
-    pending: dict[str, dict] = {}  # tool_name → 等待 done 事件的 call 记录
+    pending: dict[str, dict] = {}              # tool_name → 等待 done 事件的 call 记录
+    session_failure_counts: dict[str, int] = {}  # sid → 该 session 失败重置次数
 
     for ev in events:
         sid      = ev.get("session_id", "default")
@@ -246,15 +263,13 @@ def _extract_tool_sequences(events: list[dict]) -> list[list[dict]]:
                 call_record["result_summary"] = str(ev.get("result", ""))[:100]
                 sessions.setdefault(sid, []).append(call_record)
             else:
-                # 失败 → 截断当前 session 序列（失败前的序列仍然有价值）
-                if sid in sessions and len(sessions[sid]) >= MIN_FLOW_LENGTH:
-                    pass  # 保留到失败前的序列
-                sessions[sid] = []  # 重置
+                # 失败 → 记录一次挣扎，截断当前序列
+                session_failure_counts[sid] = session_failure_counts.get(sid, 0) + 1
+                sessions[sid] = []  # 重置，下次从头开始
 
         elif ev_type in ("error", "skill_failed", "test_failed", "give_up"):
-            # 错误发生 → 截断
-            if sid in sessions and len(sessions[sid]) >= MIN_FLOW_LENGTH:
-                pass  # 保留已有的良好序列
+            # 显式错误事件 → 记录挣扎次数，截断
+            session_failure_counts[sid] = session_failure_counts.get(sid, 0) + 1
             sessions[sid] = []  # 重置
 
         elif ev_type in ("skill_success", "git_commit", "test_passed"):
@@ -263,11 +278,14 @@ def _extract_tool_sequences(events: list[dict]) -> list[list[dict]]:
                 sessions.setdefault(f"{sid}_committed", []).extend(sessions[sid])
                 sessions[sid] = []
 
-    # 合并所有序列
-    all_sequences = []
+    # 合并所有序列，携带失败计数
+    all_sequences: list[tuple[list[dict], int]] = []
     for sid, seq in sessions.items():
         if len(seq) >= MIN_FLOW_LENGTH:
-            all_sequences.append(seq)
+            # 从 sid 推断原始 session_id（去掉 _committed 后缀）
+            orig_sid = sid.replace("_committed", "")
+            failures = session_failure_counts.get(orig_sid, 0)
+            all_sequences.append((seq, failures))
     return all_sequences
 
 
@@ -498,9 +516,11 @@ class ToolFlowMiner:
 
         new_flows: list[ToolFlow] = []
         hash_counts: dict[str, int] = {}
+        # 记录每个 hash 对应的最大 failures_before（取最难得的那次经验）
+        hash_failures: dict[str, int] = {}
 
-        # 统计各序列出现次数（跨 session）
-        for seq in sequences:
+        # 统计各序列出现次数（跨 session），并追踪挣扎程度
+        for seq, failures_before in sequences:
             if len(seq) < MIN_FLOW_LENGTH:
                 continue
             # 对序列按长度从长到短取子序列（找最有意义的流）
@@ -510,6 +530,8 @@ class ToolFlowMiner:
                     abstracted = self._abstract_sequence(sub)
                     h = _sequence_hash(abstracted)
                     hash_counts[h] = hash_counts.get(h, 0) + 1
+                    # 取这个 hash 见过的最大 failures_before（最难得的经验）
+                    hash_failures[h] = max(hash_failures.get(h, 0), failures_before)
 
         # 找到重复次数达到阈值的序列
         candidates = [h for h, c in hash_counts.items() if c >= MIN_REPEAT_COUNT]
@@ -522,16 +544,21 @@ class ToolFlowMiner:
                 continue
 
             # 找到对应的实际序列（取第一个匹配的）
-            representative = self._find_representative(sequences, h)
+            representative = self._find_representative(
+                [seq for seq, _ in sequences], h
+            )
             if not representative:
                 continue
 
-            flow = self._create_flow(representative, h)
+            failures = hash_failures.get(h, 0)
+            flow = self._create_flow(representative, h, failures_before=failures)
             if flow:
                 save_flow(flow, project_local=self.project_local)
                 self._known_hashes.add(h)
                 new_flows.append(flow)
-                log.info("ToolFlowMiner: new flow discovered: %s (%d steps)", flow.name, len(flow.steps))
+                struggle_tag = f" (struggle-discovered, {failures} failures before)" if failures > 0 else ""
+                log.info("ToolFlowMiner: new flow discovered: %s (%d steps)%s",
+                         flow.name, len(flow.steps), struggle_tag)
 
         return new_flows
 
@@ -558,8 +585,9 @@ class ToolFlowMiner:
                         return abstracted
         return None
 
-    def _create_flow(self, abstracted_seq: list[dict], source_hash: str) -> ToolFlow | None:
-        """从抽象序列创建 ToolFlow。"""
+    def _create_flow(self, abstracted_seq: list[dict], source_hash: str,
+                     failures_before: int = 0) -> ToolFlow | None:
+        """从抽象序列创建 ToolFlow，携带挣扎元数据。"""
         name, desc = _auto_name_flow(abstracted_seq)
 
         steps = []
@@ -601,6 +629,8 @@ class ToolFlowMiner:
             source_hash=source_hash,
             confidence=0.5,
             project_local=self.project_local,
+            failures_before=failures_before,
+            struggle_score=failures_before / (failures_before + 1) if failures_before > 0 else 0.0,
         )
 
 

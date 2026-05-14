@@ -465,43 +465,55 @@ async def run_agent_stream_body(
             #    - chat/question: 单轮对话，根本不需要多步骤工具流
             #    - researcher/planner: 读写较少，流提示是噪声
             #    - reviewer: 只读分析，不需要执行模式参考
+            # 1. Intent 必须是"执行型"任务 — coder/debugger/risky
             # 2. 流的步骤数 >= 3 — 少于 3 步的"流"是琐碎操作，不值得提示
             # 3. success_rate >= 0.60 — 这个模式有足够的历史验证
+            # 4. 必须是"挣扎后发现"的流 (failures_before >= 1)
+            #    理由：第一次就成功的模式可能只是运气，或者太简单不值得作为模式提示。
+            #    真正有价值的是：失败→思考→再失败→找到方法→成功 这类硬得来的经验。
             _FLOW_EXEC_INTENTS = {"coder", "debugger", "risky"}   # 只有执行型任务才注入
             _FLOW_MIN_STEPS    = 3                                  # 最少 3 步才算有价值的模式
             _FLOW_HINT_THRESH  = 0.60                               # 最少 60% 成功率
 
-            _flow_steps_count  = len(getattr(_matched_flow, "steps", [])) if _matched_flow else 0
+            _flow_steps_count      = len(getattr(_matched_flow, "steps", [])) if _matched_flow else 0
+            _flow_failures_before  = getattr(_matched_flow, "failures_before", 0) if _matched_flow else 0
+            _flow_is_struggle      = _flow_failures_before >= 1   # 至少失败过一次才算"挣扎后发现"
+
             _flow_eligible = (
                 _matched_flow is not None
                 and _flow_score >= SUGGEST_THRESH
                 and _flow_success_rate >= _FLOW_HINT_THRESH
                 and _flow_steps_count >= _FLOW_MIN_STEPS
                 and _intent_profile_early.intent in _FLOW_EXEC_INTENTS
+                and _flow_is_struggle     # 核心门控：必须是挣扎后摸索出来的经验
             )
 
             if _flow_eligible:
-                # 构建 Voyager 风格的记忆提示：历史成功模式 + 成功率 + 步骤
+                # 构建 Voyager 风格的记忆提示：展示这是"硬得来"的经验，有说服力
                 _steps_desc = "\n".join(
                     f"  {i+1}. {s.tool}"
                     + (f"  # {s.description}" if getattr(s, "description", "") else "")
                     for i, s in enumerate(_matched_flow.steps[:8])
                 )
+                _struggle_ctx = (
+                    f"经过 {_flow_failures_before} 次失败后摸索出的方案"
+                    if _flow_failures_before >= 2
+                    else "经过失败后摸索出的方案"
+                )
                 _flow_memory_hint = (
                     f"\n\n---\n"
-                    f"💡 **历史成功模式参考** (成功率 {_matched_flow.success_rate:.0%}, "
-                    f"相似度 {_flow_score:.0%})\n"
-                    f"**{_matched_flow.name}** — 过去类似任务使用的工具序列：\n"
+                    f"🔖 **历史经验参考** ({_struggle_ctx}，成功率 {_matched_flow.success_rate:.0%})\n"
+                    f"**{_matched_flow.name}** — 类似任务最终成功使用的工具序列：\n"
                     f"{_steps_desc}\n"
-                    f"*如果当前任务适合，可参考此模式；如上下文不同请灵活调整。*\n"
+                    f"*此模式来自真实失败-成功循环，可参考但需根据当前上下文灵活调整。*\n"
                     f"---\n"
                 )
                 # 将记忆提示注入为用户消息前缀（进入 LLM 的上下文窗口）
                 # 不直接执行——LLM 看到这个提示后自己决定如何行动
                 prompt = _flow_memory_hint + prompt
                 log.info(
-                    "ToolFlow memory hint injected: %s (similarity=%.0f%% success_rate=%.0f%%)",
-                    _matched_flow.name, _flow_score * 100, _flow_success_rate * 100,
+                    "ToolFlow struggle-hint injected: %s (similarity=%.0f%% success_rate=%.0f%% failures_before=%d)",
+                    _matched_flow.name, _flow_score * 100, _flow_success_rate * 100, _flow_failures_before,
                 )
                 # 更新: 流被"使用"了（作为提示），统计用途但不统计执行成功/失败
                 # 执行结果由后续 task_complete 的正常路径追踪
