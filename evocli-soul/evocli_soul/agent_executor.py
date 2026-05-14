@@ -793,6 +793,26 @@ class AgentExecutorMixin:
             if self.read_only and rpc_method in _WRITE_METHODS:
                 rpc_args["dry_run"] = True
 
+            # Prior-read advisory for fs_write (Cline pattern — bridge path)
+            # Mirrors the check in agent_tools_fs.py @agent.tool_plain fs_write.
+            # Advisory only: warns but does not block (autonomous mode respects agent autonomy).
+            if rpc_method == "fs.write":
+                try:
+                    import os as _os_pw
+                    from evocli_soul.state import get_files_read_this_session as _gfrs, get_session_root as _gsr_pw
+                    _write_path = rpc_args.get("path", "")
+                    if _write_path:
+                        _abs_write = _write_path if _os_pw.path.isabs(_write_path) else _os_pw.path.join(_gsr_pw(), _write_path)
+                        _files_read = _gfrs(self._session_id)
+                        _already_read = any(
+                            _os_pw.path.abspath(r) == _os_pw.path.abspath(_abs_write)
+                            for r in _files_read
+                        ) or _write_path in _files_read
+                        if not _already_read and _os_pw.path.exists(_abs_write):
+                            log.warning("prior-read skipped for %s", _write_path)
+                except Exception:
+                    pass  # never block write on check failure
+
             # FIX-B: 工具开始执行 → TUI 实时显示
             tool_display = _tool_display_name(rpc_method, rpc_args)
             await emit_event("tool_call_start", {"tool": rpc_method, "display": tool_display})

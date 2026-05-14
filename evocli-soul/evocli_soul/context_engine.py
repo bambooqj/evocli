@@ -133,22 +133,48 @@ async def _build_compact_symbol_nav(root: str, budget: int = 512) -> str:
     NOT file contents — just 'filename: func1, func2, Class1' per file.
     Gives LLM a directory of what exists so it knows WHAT to read via tools.
     Fast: just shell_ls + quick regex, no tree-sitter needed.
+    Supports Python, Rust, TypeScript, JavaScript, Go, Java, C/C++.
 
     Example output:
     # Project symbols (use fs_read/search_code to explore)
     src/agent.py: EvoCLIAgent, run(), stream(), _build_context()
-    src/memory_client.py: EvoCLIMemory, search(), write(), get_constraints()
-    src/handlers/agent_loop.py: run_agent_stream_body()
+    src/main.rs: main(), handle_request(), Config
     """
     try:
         import json as _json
         from evocli_soul import state as _state
 
         bridge = _state.get_bridge()
+
+        # Detect project language from file presence for better grep pattern
+        import os as _os_sym
+        _has_rs  = _os_sym.path.exists(_os_sym.path.join(root, "Cargo.toml"))
+        _has_ts  = _os_sym.path.exists(_os_sym.path.join(root, "tsconfig.json"))
+        _has_go  = _os_sym.path.exists(_os_sym.path.join(root, "go.mod"))
+
+        # Language-appropriate symbol patterns and extensions
+        if _has_rs:
+            _pattern = "^\\s*(pub fn |pub async fn |fn |impl |pub struct |pub enum |struct |enum )"
+            _include = ".rs"
+            _file_re = r"^(.*?\.rs)(?::\d+)?:(.*)$"
+        elif _has_ts:
+            _pattern = "^\\s*(export (async )?function |export class |function |class |const \\w+ = (async )?\\()"
+            _include = ".ts"
+            _file_re = r"^(.*?\.[jt]sx?)(?::\d+)?:(.*)$"
+        elif _has_go:
+            _pattern = "^\\s*(func |type \\w+ struct|type \\w+ interface)"
+            _include = ".go"
+            _file_re = r"^(.*?\.go)(?::\d+)?:(.*)$"
+        else:
+            # Default: Python
+            _pattern = "^\\s*(class |def |async def )"
+            _include = ".py"
+            _file_re = r"^(.*?\.py)(?::\d+)?:(.*)$"
+
         raw = await bridge.call("shell.grep", {
-            "pattern": "^\\s*(class |def |async def )",
+            "pattern": _pattern,
             "path": root,
-            "include": ".py",
+            "include": _include,
             "max_results": 200,
         })
         if not raw:
@@ -157,8 +183,9 @@ async def _build_compact_symbol_nav(root: str, budget: int = 512) -> str:
         text = _json.dumps(raw, ensure_ascii=False) if isinstance(raw, (dict, list)) else str(raw)
         root_path = Path(root).resolve()
         symbols_by_file: dict[str, list[str]] = {}
+        _re_mod = __import__("re")
         for row in text.splitlines():
-            match = __import__("re").match(r"^(.*?\.py)(?::\d+)?:(.*)$", row)
+            match = _re_mod.match(_file_re, row)
             if not match:
                 continue
             file_path = match.group(1).strip()

@@ -55,6 +55,8 @@ class AgentLiteLLMMixin:
                 goal=user_input[:800],
                 read_only=host.read_only,
                 compact=False,
+                model_id=(host.config or {}).get("llm", {}).get("tiers", {}).get("fast", ""),
+                provider_id=(host.config or {}).get("llm", {}).get("provider", ""),
             )
         conversation: list[Any] = [
             {"role": "system", "content": system},
