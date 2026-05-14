@@ -63,6 +63,24 @@ class AgentExecutorMixin:
                     "error": "User rejected the change preview. Try a different approach.",
                 }, ensure_ascii=False)
             # If approved or preview failed gracefully, continue with actual edit
+
+        # ── Doom loop detection ───────────────────────────────────────────────
+        try:
+            from evocli_soul.state import is_doom_loop, record_tool_call
+
+            if is_doom_loop(name, args, self._session_id):
+                log.warning("DOOM LOOP detected: tool=%s called 3+ times with same args", name)
+                import json as _json_doom
+
+                return _json_doom.dumps({
+                    "ok": False,
+                    "error": f"Doom loop detected: '{name}' was called with identical arguments 3+ times.",
+                    "suggestion": "The same approach is not working. Try a completely different strategy, or call give_up if the task cannot be completed.",
+                })
+            record_tool_call(name, args, self._session_id)
+        except Exception as _dl_err:
+            log.debug("doom loop check failed (non-fatal): %s", _dl_err)
+
         import json as _json
 
         # GAP-3: Record tool call to session event buffer for memory distillation.

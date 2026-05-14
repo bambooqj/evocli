@@ -1,3 +1,4 @@
+# pyright: reportMissingTypeArgument=false, reportMissingImports=false
 """全局状态懒初始化 — 唯一职责：管理 Soul 内所有单例实例。"""
 from __future__ import annotations
 import os
@@ -177,6 +178,48 @@ def reset_tool_failure(session_id: str) -> None:
 def get_tool_failure_count(session_id: str) -> int:
     """Return current consecutive failure count."""
     return _tool_failure_counts.get(session_id, 0)
+
+
+# ── Doom loop detection (OpenCode DOOM_LOOP_THRESHOLD pattern) ────────────────
+
+_recent_tool_calls: dict[str, list[dict[str, object]]] = {}  # session_id → [{tool, args_hash, ts}]
+
+
+def record_tool_call(tool: str, args: dict[str, object], session_id: str = "default") -> None:
+    """Record a tool call for doom loop detection."""
+    import json
+    import time
+
+    calls = _recent_tool_calls.setdefault(session_id, [])
+    # keep only last 15 calls
+    if len(calls) >= 15:
+        calls.pop(0)
+    try:
+        args_hash = hash(json.dumps(args, sort_keys=True, default=str))
+    except Exception:
+        args_hash = 0
+    calls.append({"tool": tool, "args_hash": args_hash, "ts": time.time()})
+
+
+def is_doom_loop(tool: str, args: dict[str, object], session_id: str = "default", threshold: int = 3) -> bool:
+    """
+    Return True if the exact same tool+args has been called >= threshold times recently.
+    Based on OpenCode's DOOM_LOOP_THRESHOLD=3.
+    """
+    import json
+
+    calls = _recent_tool_calls.get(session_id, [])
+    try:
+        args_hash = hash(json.dumps(args, sort_keys=True, default=str))
+    except Exception:
+        args_hash = 0
+    count = sum(1 for c in calls[-10:] if c["tool"] == tool and c["args_hash"] == args_hash)
+    return count >= threshold
+
+
+def clear_doom_loop_state(session_id: str = "default") -> None:
+    """Reset doom loop tracking for a session (call at task start)."""
+    _recent_tool_calls.pop(session_id, None)
 
 
 # ── task_complete signal (Cline attempt_completion / Gemini complete_task pattern) ──
@@ -765,3 +808,4 @@ def reset_all() -> None:
     _files_read.clear()
     _current_turns.clear()
     _added_files.clear()
+    _recent_tool_calls.clear()

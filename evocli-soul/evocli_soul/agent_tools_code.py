@@ -437,7 +437,53 @@ def register(agent, _sc, _call_handler, _sid, _json, bridge=None, config=None, m
     # The AI MUST call this to exit the autonomous loop. The loop only ends
     # when this tool is called (or max iterations reached).
     # ══════════════════════════════════════════════════════════════════════
-    
+
+    @agent.tool_plain
+    async def give_up(reason: str, what_was_tried: str, suggestion: str = "") -> str:
+        """
+        Withdraw from a task that cannot be completed as specified.
+
+        Use when:
+        - Requirements are ambiguous or contradictory
+        - Task requires permissions or access not available
+        - Multiple approaches have failed and the root cause is unclear
+        - Completing the task would cause unacceptable risk
+
+        Better to give up honestly than produce incorrect results.
+
+        Args:
+            reason: Why the task cannot be completed
+            what_was_tried: Summary of approaches attempted
+            suggestion: Optional suggestion for how the user can help
+        """
+        import json as _json_gu
+        import evocli_soul.state as _st_gu
+
+        result_text = f"[WITHDRAWN] {reason}"
+        if suggestion:
+            result_text += f"\n\nSuggestion: {suggestion}"
+
+        # Signal task completion (with withdrawn flag) so loop exits cleanly
+        _st_gu.mark_task_double_checked(_sid)
+        _st_gu.set_task_complete(_sid, result_text, "")
+
+        # Record for memory distillation
+        try:
+            _st_gu.append_session_event({
+                "type": "give_up",
+                "reason": reason,
+                "tried": what_was_tried,
+            }, _sid)
+        except Exception:
+            pass
+
+        return _json_gu.dumps({
+            "withdrawn": True,
+            "reason": reason,
+            "what_was_tried": what_was_tried,
+            "suggestion": suggestion or "Please clarify requirements or provide additional context.",
+        }, ensure_ascii=False)
+
     @agent.tool_plain
     async def task_complete(result: str, command: str = "") -> str:
         """Signal that the current task is fully complete.

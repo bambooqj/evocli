@@ -1,3 +1,4 @@
+# pyright: reportMissingTypeArgument=false, reportOptionalMemberAccess=false
 """
 handlers/agent_loop.py — Autonomous agent execution loop
 
@@ -15,20 +16,167 @@ from typing import Any
 log = logging.getLogger("evocli.handlers.agent_loop")
 
 
+def _estimate_history_tokens(history: list[dict[str, Any]]) -> int:
+    """Rough token estimate: 1 token ≈ 4 chars."""
+    total_chars = sum(
+        len(str(msg.get("content", "")))
+        for msg in history
+    )
+    return total_chars // 4
+
+
+async def _auto_compress_if_needed(
+    session_id: str,
+    history: list[dict[str, Any]],
+    req_id: str,
+    send: Any,
+    state: Any,
+    threshold: float = 0.80,
+) -> bool:
+    """
+    Auto-compress conversation history when context approaches the limit.
+    Returns True if compression was triggered.
+
+    Based on: Claude Code Reactive Compaction, Cline summarize_task,
+              OpenCode ContextOverflowError handler.
+    """
+    try:
+        from evocli_soul.config_defaults import cfg_int
+        import evocli_soul.state as _st_compress
+
+        max_total = cfg_int("context.max_total")
+        history_tokens = _estimate_history_tokens(history)
+
+        if history_tokens < max_total * threshold:
+            return False
+
+        log.info(
+            "Auto-compress triggered: history ~%dk tokens (%.0f%% of %dk limit)",
+            history_tokens // 1000,
+            history_tokens / max_total * 100,
+            max_total // 1000,
+        )
+
+        await send.stream_chunk(
+            req_id,
+            "\n\n---\n⚡ **自动压缩**: 对话历史已接近上下文限制，正在压缩以继续工作...\n\n",
+            done=False,
+        )
+
+        try:
+            from evocli_soul.context_summary import compact_session_to_anchor
+
+            summary = await compact_session_to_anchor(
+                history,
+                state.get_llm_client(),
+                existing_summary=_st_compress.get_anchored_summary(session_id),
+            )
+            if summary:
+                _st_compress.set_anchored_summary(summary, session_id)
+                _st_compress.clear_history(session_id)
+                log.info("Auto-compress: history cleared, anchored summary saved (%d chars)", len(summary))
+                return True
+        except Exception as _cs_err:
+            log.debug("compact_session failed: %s", _cs_err)
+
+        return False
+    except Exception as e:
+        log.debug("auto_compress check failed (non-fatal): %s", e)
+        return False
+
+
+def _inject_resumption_context(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Handle interrupted tool calls on session resume (Cline TASK_RESUMPTION pattern).
+
+    If the last message is an assistant message with pending tool calls,
+    inject a synthetic tool result + resumption notice so the LLM can
+    safely continue without re-executing already-started operations.
+    """
+    if not history:
+        return history
+
+    last = history[-1]
+    if last.get("role") != "assistant":
+        return history
+
+    tool_calls = last.get("tool_calls") or []
+    if not tool_calls:
+        return history
+
+    def _tool_call_id(tool_call: object) -> str | None:
+        if isinstance(tool_call, dict):
+            return tool_call.get("id")
+        return getattr(tool_call, "id", None)
+
+    def _tool_call_name(tool_call: object) -> str:
+        if isinstance(tool_call, dict):
+            fn = tool_call.get("function") or {}
+            if isinstance(fn, dict):
+                return str(fn.get("name", "unknown"))
+            return str(getattr(fn, "name", "unknown"))
+        fn = getattr(tool_call, "function", None)
+        return str(getattr(fn, "name", "unknown"))
+
+    tool_ids_with_results = {
+        msg.get("tool_call_id")
+        for msg in history
+        if msg.get("role") == "tool"
+    }
+    pending = [
+        tc for tc in tool_calls
+        if _tool_call_id(tc) and _tool_call_id(tc) not in tool_ids_with_results
+    ]
+
+    if not pending:
+        return history
+
+    log.info("Task resumption: %d interrupted tool calls detected", len(pending))
+    extended = list(history)
+
+    for tc in pending:
+        tc_id = _tool_call_id(tc) or "unknown"
+        tc_name = _tool_call_name(tc)
+        extended.append({
+            "role": "tool",
+            "tool_call_id": tc_id,
+            "content": f"[INTERRUPTED] Tool '{tc_name}' was interrupted before completing. Do not assume it succeeded.",
+        })
+
+    extended.append({
+        "role": "user",
+        "content": (
+            "[TASK RESUMPTION] This task was interrupted. "
+            "The interrupted tool calls above did NOT complete successfully. "
+            "Please reassess the current state of the codebase before continuing. "
+            "Use fs_read or shell_ls to verify the actual current state."
+        ),
+    })
+
+    return extended
+
+
 def _classify_intent(prompt: str, config: dict | None = None):
     """
     Classify the user's intent using semantic embedding similarity.
     Returns an IntentProfile that drives all downstream behavior.
     Falls back to keyword classification when fastembed is unavailable.
     """
+    from evocli_soul.intent_profile import _build_profiles
+
     try:
         from evocli_soul.intent_profile import classify
-        return classify(prompt, config)
+        profile = classify(prompt, config)
+        if profile is not None:
+            return profile
     except Exception as e:
         log.debug("Intent classification failed, using 'coder' default: %s", e)
-        # Safe fallback: treat as implementation task
-        from evocli_soul.intent_profile import _build_profiles
-        return _build_profiles().get("coder")
+
+    # Safe fallback: treat as implementation task
+    profile = _build_profiles().get("coder")
+    if profile is None:
+        raise RuntimeError("intent_profile._build_profiles() did not provide 'coder'")
+    return profile
 
 
 def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -377,17 +525,31 @@ async def run_agent_stream_body(
         # Use intent profile to decide — no more keyword guessing.
         _auto_snap_enabled = _cfg_agent.get("auto_snapshot", True)
         if _auto_snap_enabled and _intent_profile.writes_allowed:
-            async def _try_auto_snapshot() -> None:
+            # ── Initial workspace snapshot (OpenCode pattern) ─────────────────────
+            # Capture baseline state BEFORE LLM starts making changes.
+            # Non-blocking: runs in background, result used for post-task verification.
+            async def _capture_initial_snapshot() -> None:
                 try:
-                    _snap_result = await state.get_bridge().call("git.snapshot", {})
-                    if isinstance(_snap_result, dict):
-                        _ref = _snap_result.get("stash_ref", "")
-                        if _ref:
-                            log.info("Auto-snapshot created: %s (intent: %s, task: %s)",
-                                     _ref, _intent_profile.intent, prompt[:50])
+                    snap = await state.get_bridge().call("git.snapshot", {})
+                    if isinstance(snap, dict) and snap.get("stash_ref"):
+                        _st.append_session_event({
+                            "type": "initial_snapshot",
+                            "stash_ref": snap["stash_ref"],
+                            "session_id": session_id,
+                        }, session_id)
+                        log.info("Initial snapshot: %s (intent=%s)",
+                                 snap["stash_ref"], _intent_profile.intent)
                 except Exception as _se:
-                    log.debug("Auto-snapshot failed (non-fatal): %s", _se)
-            asyncio.create_task(_try_auto_snapshot())
+                    log.debug("Initial snapshot failed (non-fatal): %s", _se)
+            asyncio.create_task(_capture_initial_snapshot())
+
+        # Also reset doom loop state for fresh task
+        try:
+            from evocli_soul.state import clear_doom_loop_state
+
+            clear_doom_loop_state(session_id)
+        except Exception:
+            pass
 
         # ── Auto-detect test command ──────────────────────────────────────────
         # When task_complete is called with empty command= parameter, we auto-detect
@@ -445,7 +607,37 @@ async def run_agent_stream_body(
             # ── Stream one agent turn ──────────────────────────────────────────
             collected_chunks_iter: list[str] = []
             primary_err: Exception | None = None
-            _prior = _st.get_history(session_id)
+            _prior_raw = _st.get_history(session_id)
+            # Handle interrupted sessions (Cline TASK_RESUMPTION pattern)
+            if _auto_iter == 0 and _prior_raw:
+                try:
+                    _prior_raw = _inject_resumption_context(_prior_raw)
+                except Exception as _ri_err:
+                    log.debug("resumption injection failed (non-fatal): %s", _ri_err)
+            # Deduplicate file reads (Cline ContextManager pattern):
+            # keeps only the latest version of each file in context
+            try:
+                from evocli_soul.history_utils import deduplicate_file_reads
+
+                _prior = deduplicate_file_reads(_prior_raw)
+            except Exception as _dd_err:
+                log.debug("history deduplication failed (non-fatal): %s", _dd_err)
+                _prior = _prior_raw
+
+            # Auto-compress if history approaching context limit
+            if _auto_iter > 0:  # skip on first iteration (just started)
+                _compressed = await _auto_compress_if_needed(
+                    session_id, _prior, req_id, send, state
+                )
+                if _compressed:
+                    # Reload history after compression
+                    _prior_raw = _st.get_history(session_id)
+                    try:
+                        from evocli_soul.history_utils import deduplicate_file_reads
+
+                        _prior = deduplicate_file_reads(_prior_raw)
+                    except Exception:
+                        _prior = _prior_raw
 
             try:
                 async for chunk in agent.stream(_current_prompt,
