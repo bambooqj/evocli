@@ -176,6 +176,14 @@ pub struct App {
     /// instead of the CWD-based hash, enabling true cross-restart history continuity.
     /// None → fall back to CWD FNV-1a hash (default per-project bucket).
     pub override_session_id: Option<String>,
+
+    // ── Dynamic Thinking state label ─────────────────────────────
+    /// Set by soul_status "loading" events during context build / LLM call.
+    /// Displayed in the input bar border instead of generic "Thinking…" so users
+    /// see real-time progress (e.g. "Loading context…", "Calling LLM…").
+    /// Cleared automatically when streaming starts or finishes.
+    /// OpenCode/Continue.dev pattern: always show what the AI is doing.
+    pub thinking_label: String,
 }
 
 /// Notification urgency level — controls icon and colour.
@@ -303,6 +311,7 @@ impl App {
             max_context_tokens,
             notification: None,
             override_session_id: None,
+            thinking_label: String::new(),
         }
     }
 

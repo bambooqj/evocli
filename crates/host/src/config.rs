@@ -1034,10 +1034,51 @@ impl Config {
             config.security.denied_paths = vec![];
         }
 
+        // ── Semantic validation ───────────────────────────────────────────────
+        // Warn about invalid values (non-fatal — config is still usable).
+        for warning in config.validate() {
+            tracing::warn!("{}", warning);
+        }
+
         Ok(config)
     }
+    /// Returns a list of warning messages for invalid values (non-fatal — defaults are applied).
+    /// Called by load_or_default() automatically.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
 
-    /// Save config to disk (always saves to global config)
+        // LLM params validation
+        let temp = self.llm.params.temperature;
+        if !(0.0..=2.0).contains(&temp) {
+            warnings.push(format!(
+                "[config] llm.params.temperature={temp} is outside [0.0, 2.0]; \
+                 unexpected model behavior may occur"
+            ));
+        }
+        if self.llm.params.max_tokens == 0 {
+            warnings.push(
+                "[config] llm.params.max_tokens=0 will cause immediate token exhaustion; \
+                 minimum recommended: 512".to_string(),
+            );
+        }
+
+        // Agent config
+        if self.agent.max_tool_calls == 0 {
+            warnings.push(
+                "[config] agent.max_tool_calls=0 will cause the agent to stop immediately without executing any tools; \
+                 minimum recommended: 5".to_string(),
+            );
+        }
+        if self.agent.max_reflections > 20 {
+            warnings.push(format!(
+                "[config] agent.max_reflections={} is unusually high; \
+                 this may cause long looping on persistent errors",
+                self.agent.max_reflections
+            ));
+        }
+
+        warnings
+    }
     pub fn save(&self) -> Result<()> {
         let path = Self::path()?;
         if let Some(parent) = path.parent() {

@@ -164,7 +164,24 @@ pub async fn run(
 
     let mut last_input_mode = get_input_mode(&app.state);
     // 初始化输入框样式
-    event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count());
+    event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count(), &app.thinking_label);
+
+    // Pre-compute default session_id ONCE before the main loop.
+    // Avoids calling std::env::current_dir() on every Submit/Queue event
+    // (which races with directory changes and duplicates logic).
+    // FNV-1a hash of CWD → stable per-project session bucket across TUI restarts.
+    let default_session_id: String = app.override_session_id.clone().unwrap_or_else(|| {
+        let cwd = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let hash: u64 = cwd
+            .bytes()
+            .fold(14_695_981_039_346_656_037_u64, |acc, b| {
+                acc.wrapping_mul(1_099_511_628_211) ^ b as u64
+            });
+        format!("cwd_{:012x}", hash & 0xFFFF_FFFF_FFFF)
+    });
 
     // ── Main event loop ─────────────────────────────────
     loop {
@@ -172,7 +189,7 @@ pub async fn run(
         // 频率：状态转换时（每次对话约4-5次），而非每帧（60fps）
         let current_mode = get_input_mode(&app.state);
         if current_mode != last_input_mode {
-            event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count());
+            event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count(), &app.thinking_label);
             last_input_mode = current_mode;
         }
 
@@ -235,24 +252,13 @@ pub async fn run(
                                 // Without this, the TUI freezes visually for 15-20s while
                                 // bridge.call_stream() awaits the Soul (fastembed + LLM setup).
                                 // app.state was already set to Thinking by handle_key_event.
+                                app.thinking_label.clear(); // reset any stale label from prior turn
                                 terminal.draw(|f| ui::draw(f, &mut app, &textarea))?;
-                                // Session ID: prefer override (from resume_session) over CWD hash.
-                                // override_session_id is set when user runs `evocli session resume <id>`.
-                                // FNV-1a hash of CWD is the default per-project bucket for new sessions.
-                                let session_id = app.override_session_id.clone().unwrap_or_else(|| {
-                                    let cwd = std::env::current_dir()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string();
-                                    let hash: u64 = cwd.bytes().fold(
-                                        14_695_981_039_346_656_037_u64,
-                                        |acc, b| acc.wrapping_mul(1_099_511_628_211) ^ b as u64,
-                                    );
-                                    format!("cwd_{:012x}", hash & 0xFFFF_FFFF_FFFF)
-                                });
+                                // Use pre-computed session_id (computed once before main loop,
+                                // not on every keypress — avoids live current_dir() calls).
                                 let stream = bridge.call_stream(
                                     "agent.stream",
-                                    serde_json::json!({ "prompt": text, "session_id": session_id }),
+                                    serde_json::json!({ "prompt": text, "session_id": default_session_id }),
                                 ).await?;
                                 app.start_streaming();
                                 let tx = chunk_tx.clone();
@@ -323,7 +329,7 @@ pub async fn run(
                                 app.message_queue.push_back(text);
                                 // Refresh input style to reflect new queue count.
                                 event_handler::apply_input_style(
-                                    &mut textarea, &app.state, app.queued_count()
+                                    &mut textarea, &app.state, app.queued_count(), &app.thinking_label
                                 );
                             }
                         }
@@ -341,7 +347,7 @@ pub async fn run(
                             // Move cursor to end
                             new_ta.move_cursor(tui_textarea::CursorMove::End);
                             // Reapply style
-                            event_handler::apply_input_style(&mut new_ta, &app.state, app.queued_count());
+                            event_handler::apply_input_style(&mut new_ta, &app.state, app.queued_count(), &app.thinking_label);
                             textarea = new_ta;
                         }
                         // Invalidate cache: width changed, all line wrapping recalculated
@@ -404,7 +410,7 @@ pub async fn run(
                         _ => 0,
                     };
                     app.finish_streaming(tokens);
-                    event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count());
+                    event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count(), &app.thinking_label);
                     terminal.draw(|f| ui::draw(f, &mut app, &textarea))?;
 
                     // ── Auto-drain message queue ──────────────────────────
@@ -417,24 +423,14 @@ pub async fn run(
                         // just need to set state + start the stream.
                         app.state = AppState::Thinking;
                         event_handler::apply_input_style(
-                            &mut textarea, &app.state, app.queued_count()
+                            &mut textarea, &app.state, app.queued_count(), &app.thinking_label
                         );
                         terminal.draw(|f| ui::draw(f, &mut app, &textarea))?;
                         // Derive the same project-scoped session_id as the primary submit path
-                        let queued_session_id = app.override_session_id.clone().unwrap_or_else(|| {
-                            let cwd = std::env::current_dir()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-                            let hash: u64 = cwd.bytes().fold(
-                                14_695_981_039_346_656_037_u64,
-                                |acc, b| acc.wrapping_mul(1_099_511_628_211) ^ b as u64,
-                            );
-                            format!("cwd_{:012x}", hash & 0xFFFF_FFFF_FFFF)
-                        });
+                        // Reuse the pre-computed session_id — same project bucket.
                         let stream = bridge.call_stream(
                             "agent.stream",
-                            serde_json::json!({ "prompt": next_text, "session_id": queued_session_id }),
+                            serde_json::json!({ "prompt": next_text, "session_id": default_session_id }),
                         ).await?;
                         app.start_streaming();
                         let tx = chunk_tx.clone();
@@ -482,7 +478,7 @@ pub async fn run(
                                 _ => 0,
                             };
                             app.finish_streaming(tokens);
-                            event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count());
+                            event_handler::apply_input_style(&mut textarea, &app.state, app.queued_count(), &app.thinking_label);
                             did_finish = true;
                             break;
                         }
@@ -809,11 +805,16 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
             let message = event["message"].as_str().unwrap_or("");
             match status {
                 "loading" => {
+                    // Update thinking_label so input bar border shows real progress.
+                    // e.g. "Loading context…" → "Calling LLM…" as stages advance.
+                    app.thinking_label = message.to_string();
                     // Transient: show in notification bar, auto-expires in 8s.
                     // Never pushed to permanent messages to avoid "stuck loading" UX.
                     app.notify(format!("⏳ {message}"), app::NotifLevel::Info);
                 }
                 "ready" => {
+                    // Clear thinking_label — we're no longer in a loading stage.
+                    app.thinking_label.clear();
                     // "Memory ready" and similar startup messages → chat (one-time info)
                     // but only if they look like startup completion messages.
                     if message.contains("ready")
@@ -829,6 +830,7 @@ fn handle_soul_event(app: &mut App, event: serde_json::Value) {
                     }
                 }
                 "error" => {
+                    app.thinking_label.clear();
                     app.notify(
                         format!("⛔ {message}  ·  F12 for details"),
                         app::NotifLevel::Error,

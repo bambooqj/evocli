@@ -125,6 +125,31 @@ pub async fn dispatch(
         "fs.write" => {
             if let Some(p) = args["path"].as_str() {
                 security.validate_path_access(&std::path::Path::new(p))?;
+                // P4: Path containment check — warn when writing outside project root.
+                // The process CWD is frozen at evocli startup (never changed by Rust),
+                // so `cwd` here is always the project root the user launched from.
+                // Writing outside it is almost always a bug (directory drift).
+                // We warn rather than block to avoid breaking legitimate writes to ~/.evocli/.
+                let write_path = PathBuf::from(p);
+                let abs_write_path = if write_path.is_absolute() {
+                    write_path.clone()
+                } else {
+                    cwd.join(&write_path)
+                };
+                // Allow: inside project root OR inside ~/.evocli/ (evocli internal state)
+                let home_evocli = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .map(|h| PathBuf::from(h).join(".evocli"))
+                    .unwrap_or_else(|_| PathBuf::from(".evocli"));
+                if !abs_write_path.starts_with(&cwd) && !abs_write_path.starts_with(&home_evocli) {
+                    tracing::warn!(
+                        "[fs.write] Path '{}' is outside project root '{}'. \
+                         This may be a directory drift bug. \
+                         Ensure the AI always uses absolute paths anchored to the project root.",
+                        abs_write_path.display(),
+                        cwd.display()
+                    );
+                }
                 security.audit_log("fs.write", p, true);
             }
             fs_tools::fs_write(args)
@@ -133,6 +158,24 @@ pub async fn dispatch(
         "fs.apply_diff" => {
             if let Some(p) = args["path"].as_str() {
                 security.validate_path_access(&std::path::Path::new(p))?;
+                // P4: same path containment check as fs.write
+                let write_path = PathBuf::from(p);
+                let abs_write_path = if write_path.is_absolute() {
+                    write_path.clone()
+                } else {
+                    cwd.join(&write_path)
+                };
+                let home_evocli = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .map(|h| PathBuf::from(h).join(".evocli"))
+                    .unwrap_or_else(|_| PathBuf::from(".evocli"));
+                if !abs_write_path.starts_with(&cwd) && !abs_write_path.starts_with(&home_evocli) {
+                    tracing::warn!(
+                        "[fs.apply_diff] Path '{}' is outside project root '{}'.",
+                        abs_write_path.display(),
+                        cwd.display()
+                    );
+                }
                 security.audit_log("fs.apply_diff", p, true);
             }
             // Use spawn_blocking: fs_apply_diff can run external formatter/test suite

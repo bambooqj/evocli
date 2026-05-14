@@ -483,7 +483,10 @@ Slash commands:";
 
 /// 根据 AppState + 队列长度更新输入框的边框样式和标题
 /// 关键：只在状态转换时调用（非每帧），避免打断用户输入
-pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, queued: usize) {
+///
+/// `thinking_label`: 来自 soul_status "loading" 事件的实时进度文本。
+/// 非空时替换 Thinking 状态的默认 "Thinking…"，让用户看到实际阶段。
+pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, queued: usize, thinking_label: &str) {
     use ratatui::{
         style::{Color, Modifier, Style},
         text::Span,
@@ -502,7 +505,10 @@ pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, que
             Color::Rgb(138, 173, 244),
         ),
         AppState::Thinking => (
-            format!(" ↻  Connecting…  (Enter:queue{queue_hint} · Esc:cancel) "),
+            format!(
+                " ↻  {}  (Enter:queue{queue_hint} · Esc:cancel) ",
+                if thinking_label.is_empty() { "Thinking…" } else { thinking_label }
+            ),
             Color::Rgb(110, 115, 141),
         ),
         AppState::Streaming { .. } => (
@@ -546,13 +552,13 @@ pub fn apply_input_style(textarea: &mut TextArea<'static>, state: &AppState, que
 /// 创建带现代样式的输入 textarea (Gemini CLI 风格 — 实心背景色)
 pub fn create_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
-    apply_input_style(&mut textarea, &AppState::Idle, 0);
+    apply_input_style(&mut textarea, &AppState::Idle, 0, "");
     textarea
 }
 
 pub fn create_textarea_for_width(width: u16) -> TextArea<'static> {
     let mut textarea = TextArea::default();
-    apply_input_style(&mut textarea, &AppState::Idle, 0);
+    apply_input_style(&mut textarea, &AppState::Idle, 0, "");
     // 窄屏时调整标题
     if width < 90 {
         use ratatui::{

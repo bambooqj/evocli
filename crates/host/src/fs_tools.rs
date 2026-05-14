@@ -78,7 +78,16 @@ pub fn fs_read_range(args: &Value) -> Result<Value> {
     }))
 }
 
-/// 写入文件内容
+/// 写入文件内容（原子写入：先写 .evocli_tmp，再 rename）
+///
+/// 实现 Cline 的 atomicWriteFile 模式：
+///   1. 写入同目录下的隐藏临时文件（.filename.evocli_tmp）
+///   2. 用 std::fs::rename 原子替换目标文件
+///
+/// 为什么需要原子写入：
+///   - std::fs::write 直接覆盖目标文件，进程崩溃时会留下部分写入的损坏文件
+///   - rename 在 POSIX 和 Windows NTFS（win10 1803+）上都是原子操作
+///   - 避免 TUI 在写入中途读取到损坏状态
 pub fn fs_write(args: &Value) -> Result<Value> {
     let path = get_path(args, "path")?;
     let content = args["content"]
@@ -93,8 +102,30 @@ pub fn fs_write(args: &Value) -> Result<Value> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, content)
-        .with_context(|| format!("fs.write: cannot write {}", path.display()))?;
+
+    // Atomic write: write to a hidden .tmp file then rename.
+    // If the process crashes mid-write, the original file is untouched.
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let tmp_path = path
+        .parent()
+        .map(|p| p.join(format!(".{file_name}.evocli_tmp")))
+        .unwrap_or_else(|| std::path::PathBuf::from(format!(".{file_name}.evocli_tmp")));
+
+    std::fs::write(&tmp_path, content)
+        .with_context(|| format!("fs.write: cannot write tmp file {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &path).with_context(|| {
+        // Clean up tmp on rename failure (best-effort)
+        let _ = std::fs::remove_file(&tmp_path);
+        format!(
+            "fs.write: rename failed {} → {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+
     Ok(serde_json::json!({ "ok": true, "path": path.to_str() }))
 }
 

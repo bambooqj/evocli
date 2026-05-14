@@ -15,13 +15,17 @@ use crate::config::{Config, LlmTiers};
 use crate::keystore::KeyStore;
 
 /// Generate a starter AGENTS.md template for the current project.
+///
 /// The AI reads this file automatically at the start of every session.
+/// Includes AI Programming Bible 3.1 engineering principles that guide
+/// how the AI should behave when developing this specific project.
+///
+/// Detects project type (Rust / Python / Node) for language-specific rules.
 fn generate_agents_md_template() -> String {
-    // Try to detect project type for a more helpful template
-    let is_rust = std::path::Path::new("Cargo.toml").exists();
+    let is_rust   = std::path::Path::new("Cargo.toml").exists();
     let is_python = std::path::Path::new("pyproject.toml").exists()
         || std::path::Path::new("setup.py").exists();
-    let is_node = std::path::Path::new("package.json").exists();
+    let is_node   = std::path::Path::new("package.json").exists();
 
     let lang_rules = if is_rust {
         "- Always use `anyhow::Result` for error handling\n\
@@ -43,12 +47,31 @@ fn generate_agents_md_template() -> String {
          - Run tests after every change\n"
     };
 
+    let test_cmd = if is_rust   { "cargo test" }
+                   else if is_python { "pytest" }
+                   else if is_node   { "npm test" }
+                   else              { "see README" };
+
     format!(
         "# AGENTS.md — Project Rules for EvoCLI\n\
          #\n\
          # This file is read by the AI at the start of every session.\n\
          # Add project-specific rules, conventions, and constraints here.\n\
-         # The more specific, the better.\n\
+         \n\
+         ## Engineering Principles (AI Programming Bible 3.1)\n\
+         #\n\
+         # These constraints apply to ALL code generated for this project.\n\
+         # The AI will follow them automatically when the bible-engineering skill is active.\n\
+         \n\
+         - **Rule 0 (Zero-Debt)**: This project has no legacy users. Boldly rewrite at the source.\n\
+           Do NOT add compatibility layers or deprecated fallback paths.\n\
+         - **Rule 2 (Decoupling)**: Every new feature in its own file. One file = one responsibility.\n\
+         - **Rule 3 (Protocol First)**: Define Pydantic/TypeScript/Rust schemas BEFORE business logic.\n\
+         - **Rule 8 (Defensive)**: All external inputs validated. All async calls have timeouts.\n\
+         - **Rule 9 (Docs + Limit)**: Every public function has a docstring. Files under 2000 lines.\n\
+           Verify with: `python evocli-soul/scripts/bible_check.py .`\n\
+         - **Rule 10 (Observability)**: Structured logs at every critical state change.\n\
+           Use `trace.get_logger()` or your project's structured logger.\n\
          \n\
          ## Code Style\n\
          {}\n\
@@ -60,10 +83,11 @@ fn generate_agents_md_template() -> String {
          - Never commit directly to main/master\n\
          - Never delete tests to make builds pass\n\
          - Never use `TODO` comments without a linked issue\n\
+         - Never use bare `except: pass` — always log or re-raise\n\
          \n\
          ## Testing\n\
-         - Always run tests before declaring a task complete\n\
-         - Test command: {}\n\
+         - Always run tests before declaring a task complete (bible-engineering Rule 6)\n\
+         - Test command: {test_cmd}\n\
          \n\
          ## Naming Conventions\n\
          - (Describe naming conventions here)\n\
@@ -71,15 +95,7 @@ fn generate_agents_md_template() -> String {
          ## Notes\n\
          - (Add any other context the AI should know about this project)\n",
         lang_rules,
-        if is_rust {
-            "cargo test"
-        } else if is_python {
-            "pytest"
-        } else if is_node {
-            "npm test"
-        } else {
-            "see README"
-        }
+        test_cmd = test_cmd,
     )
 }
 
