@@ -216,8 +216,11 @@ class LLMClient:
 
         Only retryable errors (rate-limit, timeout, 5xx) trigger events.
         Auth errors and bad-request errors re-raise immediately.
+        Uses exponential backoff with Full Jitter (AWS 2015 recommendation):
+          sleep = random(0, min(MAX_DELAY, BASE * 2^attempt))
         """
         import asyncio as _asyncio
+        import random as _random
 
         _RETRYABLE_MARKERS = (
             "rate limit", "ratelimit", "rate_limit",
@@ -226,27 +229,49 @@ class LLMClient:
             "502", "503", "529",
             "overloaded", "capacity", "busy",
         )
+        # Permanent errors (4xx except 429) should NOT be retried —
+        # feed back to LLM for correction instead.
+        _PERMANENT_STATUS_CODES = {400, 401, 403, 404, 422}
+
+        _BASE_DELAY = 1.0    # Initial retry delay (seconds)
+        _MAX_DELAY  = 60.0   # Cap at 60s between retries
 
         for _attempt in range(1, self._max_retries + 2):
             try:
                 return await self._router.acompletion(**kwargs)
             except Exception as _e:
                 _err_lower = str(_e).lower()
-                _is_retryable = any(m in _err_lower for m in _RETRYABLE_MARKERS)
+
+                # Check for permanent HTTP error codes — don't retry
+                _status = getattr(_e, 'status_code', None) or getattr(_e, 'status', None)
+                if _status and int(_status) in _PERMANENT_STATUS_CODES:
+                    log.warning("Permanent LLM error %s — no retry: %s", _status, _e)
+                    raise
+
+                _is_retryable = any(m in _err_lower for m in _RETRYABLE_MARKERS) or (
+                    _status and int(_status) in {429, 500, 502, 503, 504, 529}
+                )
+
                 if _attempt <= self._max_retries and _is_retryable:
+                    # Full Jitter Exponential Backoff (AWS best practice 2015)
+                    _cap = min(_MAX_DELAY, _BASE_DELAY * (2 ** (_attempt - 1)))
+                    _delay = _random.uniform(0, _cap)
+
                     try:
                         from evocli_soul.rpc import emit_event as _retry_ev
                         await _retry_ev("soul_status", {
                             "status":  "loading",
                             "message": (
                                 f"Retrying {_attempt}/{self._max_retries}, "
-                                f"waiting {self._retry_after}s\u2026 "
+                                f"waiting {_delay:.1f}s\u2026 "
                                 f"({type(_e).__name__})"
                             ),
                         })
                     except Exception:
                         pass
-                    await _asyncio.sleep(self._retry_after)
+                    log.info("LLM transient error (attempt %d/%d), retry in %.1fs: %s",
+                             _attempt, self._max_retries, _delay, _e)
+                    await _asyncio.sleep(_delay)
                 else:
                     raise
         raise RuntimeError("_acompletion_with_retry_events: unreachable")

@@ -170,6 +170,86 @@ class SkillEngine:
         self._load_skills()
         return len(self._skills) + len(self._guidance_skills)
 
+    # ── Auto-promotion (Draft → Verified → Trusted) ──────────────────────
+    # Based on: n8n checkpoint pattern + LeetProof(2026) verification thresholds
+
+    DRAFT_PROMOTE_SUCCESSES    = 2    # Draft → Verified after N successes
+    DRAFT_PROMOTE_SUCCESS_RATE = 0.80 # AND success rate ≥ 80%
+    VERIFIED_PROMOTE_SUCCESSES = 5    # Verified → Trusted after N successes
+    VERIFIED_PROMOTE_RATE      = 0.90 # AND success rate ≥ 90%
+
+    def record_execution(self, skill_id: str, success: bool) -> str | None:
+        """
+        Record a skill execution result and apply auto-promotion rules.
+
+        Returns the new status if promoted, None otherwise.
+        """
+        skill = self._skills.get(skill_id)
+        if not skill:
+            return None
+
+        # Load or initialize execution history from metadata
+        history = getattr(skill, "_exec_history", {"successes": 0, "failures": 0})
+        if success:
+            history["successes"] += 1
+        else:
+            history["failures"] += 1
+        skill._exec_history = history  # type: ignore[attr-defined]
+
+        total = history["successes"] + history["failures"]
+        rate  = history["successes"] / total if total > 0 else 0.0
+
+        new_status: str | None = None
+
+        if skill.status == "draft":
+            if (history["successes"] >= self.DRAFT_PROMOTE_SUCCESSES
+                    and rate >= self.DRAFT_PROMOTE_SUCCESS_RATE):
+                new_status = "verified"
+
+        elif skill.status == "verified":
+            if (history["successes"] >= self.VERIFIED_PROMOTE_SUCCESSES
+                    and rate >= self.VERIFIED_PROMOTE_RATE):
+                new_status = "trusted"
+
+        if new_status:
+            old_status = skill.status
+            skill.status = new_status
+            log.info(
+                "Skill '%s' auto-promoted: %s → %s (successes=%d, rate=%.0f%%)",
+                skill_id, old_status, new_status,
+                history["successes"], rate * 100,
+            )
+            # Persist the new status to the TOML file if we can find it
+            self._persist_status(skill_id, new_status)
+
+        return new_status
+
+    def _persist_status(self, skill_id: str, new_status: str) -> None:
+        """Update the status field in the skill's TOML file on disk."""
+        import re
+        skill_dirs = [
+            Path(__file__).parent / "builtin_skills",
+            Path.home() / ".evocli" / "skills",
+            self.project_dir / ".evocli" / "skills",
+        ]
+        for skill_dir in skill_dirs:
+            candidate = skill_dir / f"{skill_id}.toml"
+            if candidate.exists():
+                try:
+                    text = candidate.read_text(encoding="utf-8")
+                    # Replace status = "..." line
+                    updated = re.sub(
+                        r'(status\s*=\s*")[^"]*(")',
+                        f'\\g<1>{new_status}\\g<2>',
+                        text,
+                    )
+                    if updated != text:
+                        candidate.write_text(updated, encoding="utf-8")
+                        log.debug("Persisted status '%s' for skill '%s'", new_status, skill_id)
+                except Exception as e:
+                    log.warning("Failed to persist skill status for '%s': %s", skill_id, e)
+                return
+
     # ── query ────────────────────────────────────────────
 
     def list_skills(self) -> list[dict[str, str]]:

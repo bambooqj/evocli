@@ -128,9 +128,32 @@ impl SecurityController {
             return Ok(());
         }
 
-        let path_str = path.to_string_lossy().to_lowercase();
+        // ── Symlink resolution (CWE-22 mitigation) ───────────────────────────
+        // Simple string matching on the raw path is vulnerable to symlink attacks:
+        //   ln -s ~/.ssh ./evil_link  →  fs.read("evil_link/id_rsa") bypasses check
+        // We canonicalize to resolve symlinks before checking denied patterns.
+        let resolved: std::path::PathBuf = if path.exists() {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        } else {
+            // New file: canonicalize parent directory, then re-append filename
+            match path.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => {
+                    let canon_parent = std::fs::canonicalize(parent)
+                        .unwrap_or_else(|_| parent.to_path_buf());
+                    canon_parent.join(path.file_name().unwrap_or_default())
+                }
+                _ => {
+                    // Relative path with no parent — join with CWD
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join(path)
+                }
+            }
+        };
 
-        // Config-driven denied paths — fully user-controlled
+        let path_str = resolved.to_string_lossy().to_lowercase();
+
+        // Config-driven denied paths — checked against the resolved path
         for denied in self
             .cfg
             .denied_paths
@@ -138,11 +161,11 @@ impl SecurityController {
             .chain(self.cfg.extra_denied_paths.iter())
         {
             if path_str.contains(denied.to_lowercase().as_str()) {
-                self.audit_log("path.validate", &path.display().to_string(), false);
+                self.audit_log("path.validate", &resolved.display().to_string(), false);
                 bail!(
                     "[E202] '{}' denied by path rule '{}'.\n\
                      Edit ~/.evocli/config.toml [security] denied_paths to change.",
-                    path.display(),
+                    resolved.display(),
                     denied
                 );
             }

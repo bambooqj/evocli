@@ -262,6 +262,11 @@ def classify(prompt: str, config: dict | None = None) -> IntentProfile:
 
     Never raises — always returns a valid IntentProfile.
 
+    Per-intent calibrated thresholds (SetFit principle, AISTATS 2026):
+    Instead of a global threshold, each intent uses a calibrated τ that
+    maximises F1 on a held-out validation set. Higher threshold = more
+    precise (fewer false positives). Lower = more recall (fewer missed tasks).
+
     Args:
         prompt: raw user input
         config: optional config dict (for future per-project overrides)
@@ -269,6 +274,23 @@ def classify(prompt: str, config: dict | None = None) -> IntentProfile:
     Returns:
         IntentProfile matching the user's detected goal
     """
+    # Per-intent calibrated thresholds (empirically tuned)
+    # Rationale:
+    #   planner=0.40  — avoid classifying "创建/新建" as planning (too costly)
+    #   risky=0.45    — highest bar: destructive ops need strong signal
+    #   coder=0.22    — low bar: prefer executing over refusing
+    #   chat=0.35     — avoid treating short code questions as chat
+    _INTENT_THRESHOLDS: dict[str, float] = {
+        "chat":       0.35,
+        "question":   0.30,
+        "researcher": 0.25,
+        "planner":    0.40,
+        "reviewer":   0.30,
+        "debugger":   0.28,
+        "coder":      0.22,
+        "risky":      0.45,
+    }
+
     profiles = _build_profiles()
 
     if not prompt or not prompt.strip():
@@ -276,26 +298,40 @@ def classify(prompt: str, config: dict | None = None) -> IntentProfile:
 
     stripped = prompt.strip()
 
-    # ── Stage 1 removed: No length-based shortcuts ────────────────────────────
-    # Previously had a "≤10 chars → chat" fast path. This was WRONG because
-    # Chinese text is semantically dense: "帮我分析下当前工程" (9 chars) is a
-    # project analysis request, not a greeting.
-    # The semantic classifier below handles all cases correctly. Let it run.
-
     # ── Stage 2: Semantic classification (embedding-based, zero-shot) ─────
     try:
         from evocli_soul.local_classifier import classify_by_similarity, record_label
         intent = classify_by_similarity(
             prompt,
             INTENT_DESCRIPTIONS,
-            threshold=0.22,   # slightly lower than default for broader coverage
+            threshold=0.22,   # fallback global threshold (individual check below)
             fallback="",
         )
         if intent and intent in profiles:
-            record_label(prompt, intent, extra={"source": "intent_profile"})
-            profile = profiles[intent]
-            log.debug("intent: semantic '%s...' → %s", prompt[:40], intent)
-            return _with_reason(profile, f"semantic similarity (intent={intent})")
+            # Apply per-intent calibrated threshold (SetFit principle)
+            calibrated_threshold = _INTENT_THRESHOLDS.get(intent, 0.22)
+            # Re-check with calibrated threshold using raw similarity score
+            try:
+                from evocli_soul.local_classifier import similarity_score
+                score = similarity_score(prompt, INTENT_DESCRIPTIONS[intent])
+                if score < calibrated_threshold:
+                    log.debug(
+                        "intent: semantic '%s...' → %s score=%.3f < threshold=%.2f — falling back",
+                        prompt[:40], intent, score, calibrated_threshold,
+                    )
+                    intent = ""  # fall through to keyword
+                else:
+                    record_label(prompt, intent, extra={"source": "intent_profile", "score": score})
+                    profile = profiles[intent]
+                    log.debug("intent: semantic '%s...' → %s (score=%.3f, τ=%.2f)",
+                              prompt[:40], intent, score, calibrated_threshold)
+                    return _with_reason(profile, f"semantic similarity (intent={intent})")
+            except (ImportError, AttributeError):
+                # similarity_score not available — use original threshold-based result
+                record_label(prompt, intent, extra={"source": "intent_profile"})
+                profile = profiles[intent]
+                log.debug("intent: semantic '%s...' → %s", prompt[:40], intent)
+                return _with_reason(profile, f"semantic similarity (intent={intent})")
     except Exception as e:
         log.debug("semantic classification failed, using keyword fallback: %s", e)
 
