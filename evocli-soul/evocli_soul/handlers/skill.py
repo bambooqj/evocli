@@ -102,6 +102,16 @@ async def handle_skill_run(req_id: str, params: dict, send, state) -> None:
             })
             await send.response(req_id, result)
 
+        # ── Auto-promotion: record result and check threshold ─────────────
+        # Implements Draft→Verified→Trusted based on success rate (PROMPT-09)
+        try:
+            ok_final = result.get("ok", False) if isinstance(result, dict) else False
+            new_status = engine.record_execution(skill_id, success=ok_final)
+            if new_status:
+                log.info("Skill '%s' auto-promoted to '%s'", skill_id, new_status)
+        except Exception as promo_err:
+            log.debug("Skill auto-promotion check failed (non-fatal): %s", promo_err)
+
     except Exception as e:
         log.exception("skill.run failed")
         await send.error(req_id, -32603, str(e))

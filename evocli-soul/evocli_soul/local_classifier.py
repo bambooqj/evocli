@@ -154,6 +154,22 @@ def classify_by_similarity(
     return best_name
 
 
+def similarity_score(text: str, description: str) -> float:
+    """
+    Compute cosine similarity between text and a single description.
+    Used by intent_profile.py for per-intent threshold calibration.
+    Returns 0.0 if embedder is unavailable.
+    """
+    embedder = get_shared_embedder()
+    if embedder is None:
+        return 0.0
+    q = _embed(text, embedder)
+    d = _embed(description, embedder)
+    if q is None or d is None:
+        return 0.0
+    return float(_cosine(q, d))
+
+
 def rank_by_similarity(
     text: str,
     items: list[tuple[str, str]],  # [(id, description)]

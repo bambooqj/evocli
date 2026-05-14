@@ -95,7 +95,7 @@ pub struct ChoiceRequest {
 /// Held inside Mutex so the outer Arc<SoulBridge> never changes.
 struct BridgeInner {
     _child: Child,
-    stdin_tx: mpsc::UnboundedSender<String>,
+    stdin_tx: mpsc::Sender<String>,
 }
 
 /// Soul bridge with automatic Python process restart.
@@ -140,7 +140,7 @@ impl SoulBridge {
         let streams: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<StreamChunk>>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
-        let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(256);  // bounded: backpressure
 
         tokio::spawn(async move {
             let mut w = tokio::io::BufWriter::new(stdin);
@@ -431,7 +431,7 @@ impl SoulBridge {
         let (new_child, new_stdin, new_stdout) = Self::_spawn_process(&self.soul_path).await?;
 
         // New stdin writer task
-        let (new_stdin_tx, mut new_stdin_rx) = mpsc::unbounded_channel::<String>();
+        let (new_stdin_tx, mut new_stdin_rx) = mpsc::channel::<String>(256);  // bounded
         tokio::spawn(async move {
             let mut w = tokio::io::BufWriter::new(new_stdin);
             while let Some(line) = new_stdin_rx.recv().await {
@@ -490,12 +490,14 @@ impl SoulBridge {
         };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), tx);
-        // Send to Python via inner.stdin_tx (Mutex held only during send, not during await)
+        // Send to Python via inner.stdin_tx (bounded channel: .send() is async)
         self.inner
             .lock()
             .await
             .stdin_tx
-            .send(serde_json::to_string(&req)?)?;
+            .send(serde_json::to_string(&req)?)
+            .await
+            .map_err(|e| anyhow::anyhow!("stdin channel closed: {e}"))?;
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
             Ok(Ok(resp)) => {
                 if let Some(err) = resp.error {
@@ -528,7 +530,9 @@ impl SoulBridge {
             .lock()
             .await
             .stdin_tx
-            .send(serde_json::to_string(&req)?)?;
+            .send(serde_json::to_string(&req)?)
+            .await
+            .map_err(|e| anyhow::anyhow!("stdin channel closed: {e}"))?;
         Ok(rx)
     }
 
@@ -648,7 +652,9 @@ impl SoulBridge {
         // tool_reply field removed — all sends go through inner now
         let serialized = serde_json::to_string(&resp).unwrap_or_default();
         if let Ok(inner) = self.inner.try_lock() {
-            let _ = inner.stdin_tx.send(serialized);
+            // Bounded channel: use try_send to avoid blocking in sync context.
+            // If full, the tool reply is dropped — acceptable since restart is in progress.
+            let _ = inner.stdin_tx.try_send(serialized);
         }
         // Note: try_lock() may fail if another task holds inner during restart.
         // In that case the tool reply is silently dropped — acceptable since the
@@ -691,7 +697,7 @@ pub fn spawn_restart_watchdog(bridge: std::sync::Arc<SoulBridge>) {
                         let _ = bridge.inner.lock().await.stdin_tx.send(
                             r#"{"method":"event.emit","params":{"type":"soul_status","status":"ready","message":"✅ Python Soul restarted automatically"}}"#
                             .to_string()
-                        );
+                        ).await;
                         break;
                     }
                     Err(e) => {

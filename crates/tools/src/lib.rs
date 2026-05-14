@@ -413,11 +413,11 @@ pub fn run_command(
                 }
             }
             Ok(None) => {
-                // Kill the child and WAIT for it to prevent zombie processes.
-                // kill() sends SIGKILL but does NOT reap the process table entry.
-                // Without wait(), the zombie lingers until the Host process exits.
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the zombie — collect exit status
+                // Timeout: kill the ENTIRE process group to prevent orphan child processes.
+                // child.kill() only kills the direct shell process; its children
+                // (e.g. backgrounded `sleep 1000`) survive as orphans.
+                kill_process_group(&mut child);
+                let _ = child.wait(); // Reap to avoid zombie
                 bail!("Command timed out after {timeout_secs}s: {cmd_trimmed}");
             }
             Err(e) => bail!("Failed to wait for command: {e}"),
@@ -486,6 +486,30 @@ fn read_pipe<R: std::io::Read>(pipe: Option<R>) -> String {
             String::from_utf8_lossy(&buf).into_owned()
         }
         None => String::new(),
+    }
+}
+
+// ── Process group termination (CWE-400 resource leak prevention) ─────────────
+//
+// child.kill() only sends SIGKILL to the direct shell process.
+// Child processes spawned by the shell (e.g. `sleep 1000 &`) survive as orphans.
+// We kill the entire process group to prevent this resource leak.
+
+fn kill_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            // Send SIGKILL to the entire process group (negative pid = pgid)
+            unsafe {
+                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: fall back to killing just the direct child.
+        // Full process tree kill via Job Objects would require windows-sys.
+        let _ = child.kill();
     }
 }
 
