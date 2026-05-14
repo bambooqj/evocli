@@ -641,11 +641,44 @@ def append_session_event(event: dict, session_id: str = "default") -> None:
 
     Called from _execute_tool() and Python-native tool closures in agent.py.
     The accumulated events are consumed by MemoryDistiller at session end (GAP-3).
-    Each session has its own buffer — concurrent sessions are isolated.
+
+    For success anchor events (git_commit, test_passed, task_complete), also
+    persist to events.db so the tool_flow_miner scheduler can detect them.
+    The miner only reads events.db (Rust-managed), not the in-memory buffer.
     """
     if session_id not in _session_events:
         _session_events[session_id] = []
     _session_events[session_id].append(event)
+
+    # Persist success anchors to events.db so tool_flow_miner can see them.
+    # Rust records tool_call/tool_error automatically; Python must add anchors.
+    _ANCHOR_TYPES = {"git_commit", "test_passed", "skill_success", "give_up",
+                     "test_failed", "skill_failed"}
+    ev_type = event.get("type", "")
+    if ev_type in _ANCHOR_TYPES:
+        try:
+            import sqlite3 as _sqlite3, json as _json, time as _time
+            from pathlib import Path as _Path
+            db_path = _Path.home() / ".evocli" / "events.db"
+            if db_path.exists():
+                _conn = _sqlite3.connect(str(db_path), timeout=5)
+                try:
+                    _conn.execute(
+                        "INSERT INTO events (session_id, type, payload, created_at, project_id) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            session_id,
+                            ev_type,
+                            _json.dumps(event, ensure_ascii=False),
+                            _time.strftime("%Y-%m-%dT%H:%M:%S"),
+                            event.get("project_id", ""),
+                        ),
+                    )
+                    _conn.commit()
+                finally:
+                    _conn.close()
+        except Exception:
+            pass  # Non-fatal: events.db write is best-effort
 
 
 def drain_session_events(session_id: str = "default") -> list[dict]:

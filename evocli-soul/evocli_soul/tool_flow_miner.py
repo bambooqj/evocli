@@ -213,6 +213,88 @@ def abstract_params(tool_name: str, params: dict) -> dict:
 # 序列提取（Extract Sequences from Rich Events）
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _normalize_events(events: list[dict]) -> list[dict]:
+    """
+    Normalize events from different sources to a common format.
+
+    Two sources with different schemas:
+    1. state.append_session_event() → Python in-memory format:
+       {"type": "tool_called", "tool": "fs_read", "params": {...}, "session_id": "..."}
+       {"type": "tool_done",   "tool": "fs_read", "ok": True, "result": "...", "session_id": "..."}
+       {"type": "git_commit",  "session_id": "..."}
+
+    2. events.db (Rust EventBus) → Rust format:
+       {"type": "tool_call",  "session_id": "...", "data": {"tool": "fs.read", ...}}
+       {"type": "tool_error", "session_id": "...", "data": {"tool": "fs.read", "error": "..."}}
+
+    Normalizes to Python in-memory format so _extract_tool_sequences can process both.
+    """
+    # Success anchor tools in Rust format (git.commit → git_commit anchor)
+    _RUST_SUCCESS_ANCHORS = {
+        "git.commit":       "git_commit",
+        "git_commit":       "git_commit",
+        "test_and_capture": "test_passed",
+        "skill.success":    "skill_success",
+    }
+    # Failure indicators in Rust format
+    _RUST_FAILURES = {"shell.run": None}  # shell.run failures are captured via tool_error
+
+    normalized = []
+    for ev in events:
+        ev_type = ev.get("type", "")
+        sid     = ev.get("session_id", "default")
+
+        # Already in Python format — pass through unchanged
+        if ev_type in ("tool_called", "tool_done", "tool_called",
+                       "git_commit", "test_passed", "skill_success",
+                       "error", "skill_failed", "test_failed", "give_up"):
+            normalized.append(ev)
+            continue
+
+        # Rust events.db format: tool_call / tool_error
+        data    = ev.get("data", {}) if isinstance(ev.get("data"), dict) else {}
+        tool    = data.get("tool", data.get("method", ev.get("tool", "")))
+        # Remove prefix (fs.read → fs_read for name matching)
+        tool_py = tool.replace(".", "_") if tool else ""
+
+        if ev_type == "tool_call":
+            # Check if this is a success anchor (e.g., git.commit → git_commit)
+            if tool in _RUST_SUCCESS_ANCHORS:
+                normalized.append({
+                    "type":       _RUST_SUCCESS_ANCHORS[tool],
+                    "session_id": sid,
+                    "tool":       tool_py,
+                })
+            else:
+                # Regular tool call — emit as tool_called + tool_done (combined, ok=True)
+                # Rust only records at call time; assume ok unless paired with tool_error
+                normalized.append({
+                    "type":       "tool_called",
+                    "session_id": sid,
+                    "tool":       tool_py,
+                    "rpc":        tool,
+                    "params":     data.get("args", data.get("params", {})),
+                })
+                normalized.append({
+                    "type":       "tool_done",
+                    "session_id": sid,
+                    "tool":       tool_py,
+                    "ok":         True,
+                    "result":     "",
+                })
+
+        elif ev_type == "tool_error":
+            # Tool failed → emit failure signal + remove the paired tool_called/done
+            normalized.append({
+                "type":       "error",
+                "session_id": sid,
+                "tool":       tool_py,
+                "error":      data.get("error", ""),
+            })
+
+    return normalized
+
+
 def _extract_tool_sequences(events: list[dict]) -> list[tuple[list[dict], int]]:
     """
     从 session_events 中提取完整的工具调用序列。
@@ -510,7 +592,9 @@ class ToolFlowMiner:
         
         Returns: 新发现/更新的工具流列表
         """
-        sequences = _extract_tool_sequences(events)
+        # Normalize events from both Python in-memory format and Rust events.db format
+        normalized_events = _normalize_events(events)
+        sequences = _extract_tool_sequences(normalized_events)
         if not sequences:
             return []
 
