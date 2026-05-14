@@ -454,7 +454,16 @@ async def run_agent_stream_body(
                 AUTO_EXECUTE_THRESH, SUGGEST_THRESH,
             )
             _matched_flow, _flow_score = check_flow_trigger(prompt)
-            if _matched_flow and _flow_score >= AUTO_EXECUTE_THRESH:
+            # 自动执行要求双重门控：相似度 >= 0.70 AND 历史成功率 >= 0.90
+            # 理由：自动执行完全绕过 LLM 推理，必须是已验证的高可靠模式。
+            # 成功率 < 90% 意味着 10+ 次里就有 1 次失败，对自动化不可接受。
+            # 仅建议（suggest）路径要求较低：成功率 >= 0.60 即可（LLM 会决定是否采用）
+            _AUTO_EXEC_SUCCESS_THRESH = 0.90   # 自动执行：必须有 90%+ 历史成功率
+            _SUGGEST_SUCCESS_THRESH   = 0.60   # 仅建议：60%+ 即可（LLM 判断）
+            _flow_success_rate = getattr(_matched_flow, "success_rate", 0.0) if _matched_flow else 0.0
+
+            if (_matched_flow and _flow_score >= AUTO_EXECUTE_THRESH
+                    and _flow_success_rate >= _AUTO_EXEC_SUCCESS_THRESH):
                 # 高置信度：直接建议执行工具流，以 system 消息通知用户
                 _flow_hint = (
                     _loop_msg(
@@ -504,7 +513,8 @@ async def run_agent_stream_body(
                     await send.stream_chunk(req_id,
                         _loop_msg("tool_flow", "execution_failed", failed_step=_flow_result.get("failed_step")),
                         done=False)
-            elif _matched_flow and _flow_score >= SUGGEST_THRESH:
+            elif (_matched_flow and _flow_score >= SUGGEST_THRESH
+                    and _flow_success_rate >= _SUGGEST_SUCCESS_THRESH):
                 # 中置信度：在响应开头提示有工具流可用（不打断流程）
                 _hint = _loop_msg(
                     "tool_flow",

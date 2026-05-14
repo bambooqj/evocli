@@ -620,7 +620,7 @@ class FlowTrigger:
             candidates = [
                 f for f in self._flows
                 if not f.trigger_tags or bool(set(f.trigger_tags) & intent_tags)
-                if f.confidence >= 0.35 and getattr(f, 'success_rate', 1.0) >= 0.50  # 极低置信度/失败率的流不触发
+                if f.confidence >= 0.35 and getattr(f, 'success_rate', 1.0) >= 0.60  # 至少60%成功率才进候选池
             ]
         except Exception:
             candidates = self._flows
